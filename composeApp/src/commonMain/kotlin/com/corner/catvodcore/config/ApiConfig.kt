@@ -180,7 +180,8 @@ object ApiConfig {
     }
 
     fun getSpider(site: Site): Spider {
-        return BaseLoader.getSpider(site.key, site.api, site.ext ?: "", site.jar ?: "")
+        val jar = site.jar?.takeIf { it.isNotBlank() } ?: api.spider
+        return BaseLoader.getSpider(site.key, site.api, site.ext ?: "", jar)
     }
 
     fun getSite(key: String): Site? {
@@ -189,7 +190,8 @@ object ApiConfig {
 
     fun setRecent(site: Site) {
         api.recent = site.key
-        BaseLoader.setRecent(site.key, site.api, site.jar)
+        val jar = site.jar?.takeIf { it.isNotBlank() } ?: api.spider
+        BaseLoader.setRecent(site.key, site.api, jar)
     }
 
     fun parseExt(ext: String): String {
@@ -313,7 +315,11 @@ fun Api.init() {
 fun Api.initSite() {
     if (sites.isEmpty()) return
     for (site in sites) {
-        val jarBase = site.jar?.takeIf { it.isNotBlank() } ?: api.spider
+        // 对齐 TV：站点未指定 jar 时继承配置 spider
+        if (site.jar.isNullOrBlank() && spider.isNotBlank()) {
+            site.jar = spider
+        }
+        val jarBase = site.jar?.takeIf { it.isNotBlank() } ?: spider
         site.api = ApiConfig.parseApi(site.api, jarBase)
         site.ext = ApiConfig.parseExt(site.ext)
     }

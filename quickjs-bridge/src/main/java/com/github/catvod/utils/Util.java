@@ -57,6 +57,23 @@ public class Util {
         }
     }
 
+    /**
+     * spider.jar Init.init() 会调用；桌面端用日志代替 Android Toast。
+     * 注意：URLClassLoader 父优先会加载本类而非 jar 内 Util。
+     */
+    public static void notify(String msg) {
+        if (msg == null || msg.isBlank()) return;
+        System.out.println("[catvod.notify] " + msg);
+    }
+
+    public static void notify(String msg, Integer length) {
+        notify(msg);
+    }
+
+    public static void showToast(String msg, Integer length) {
+        notify(msg);
+    }
+
     private static String getHostAddress(String keyword) throws Exception {
         Enumeration<NetworkInterface> en = NetworkInterface.getNetworkInterfaces();
         while (en.hasMoreElements()) {
