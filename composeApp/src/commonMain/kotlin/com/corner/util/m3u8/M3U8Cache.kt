@@ -10,13 +10,13 @@ object M3U8Cache {
     private val cache = ConcurrentHashMap<String, String>()
     private val scheduler: ScheduledExecutorService = Executors.newScheduledThreadPool(1)
 
-    // 默认过期时间：5分钟（毫秒）
+    // 默认过期时间：5分钟（毫秒）——密钥等短内容；播放列表可传更长 TTL
     private const val DEFAULT_EXPIRY_TIME = 5L * 60 * 1000
 
-    fun put(content: String): String {
+    fun put(content: String, expiryTimeMs: Long = DEFAULT_EXPIRY_TIME): String {
         val id = UUID.randomUUID().toString()
         cache[id] = content
-        scheduleCleanup(id)
+        scheduleCleanup(id, expiryTimeMs)
         return id
     }
 

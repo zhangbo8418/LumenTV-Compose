@@ -69,7 +69,7 @@ class PySpiderProcess(
             python.home?.let { home ->
                 // Embed（python3xx._pth / python3xx.zip）不能设 PYTHONHOME，否则会找不到 encodings 立刻退出
                 if (python.embed) {
-                    log.info("捆绑 Python 为 embed 布局，跳过 PYTHONHOME: {}", home.absolutePath)
+                    log.debug("捆绑 Python 为 embed 布局，跳过 PYTHONHOME: {}", home.absolutePath)
                 } else {
                     put("PYTHONHOME", home.absolutePath)
                 }

@@ -590,11 +590,8 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
             SnackBar.postMsg("播放地址为空", type = SnackBar.MessageType.WARNING)
             return false
         }
-        val playable = url.startsWith("http://", true) || url.startsWith("https://", true) ||
-            url.startsWith("file:") || url.startsWith("rtmp") || url.startsWith("/") ||
-            url.startsWith("rtp://") || url.startsWith("udp://")
-        if (!playable) {
-            log.warn("拒绝非媒体地址，避免当作本地文件: {}", url.take(80))
+        if (!isPlayableMediaUrl(url)) {
+            log.warn("拒绝非媒体地址，避免当作本地文件: {}", url)
             return false
         }
         if (isLoadGenerationStale(generation) || !vm.shouldApplyPlayback() || isCleaned) {
@@ -755,6 +752,30 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
     private fun isStreamingUrl(mrl: String): Boolean {
         val lower = mrl.lowercase()
         return lower.contains(".m3u8") || lower.contains("/flv/") || lower.contains(".flv?")
+    }
+
+    /** 与 DetailViewModel.isDirectlyPlayable 对齐：接受 http(s)/流协议，以及 Windows 本地 lumen-m3u8 */
+    private fun isPlayableMediaUrl(url: String): Boolean {
+        val u = url.trim()
+        if (u.isBlank()) return false
+        val lower = u.lowercase()
+        if (lower.startsWith("http://") || lower.startsWith("https://")) return true
+        if (lower.startsWith("file:") || lower.startsWith("rtmp") ||
+            lower.startsWith("rtp://") || lower.startsWith("udp://")
+        ) {
+            return true
+        }
+        if (lower.contains("lumen-m3u8") || lower.contains("cached_m3u8")) return true
+        val isWinAbs = u.length >= 3 && u[0].isLetter() && u[1] == ':' &&
+            (u[2] == '\\' || u[2] == '/')
+        if ((u.startsWith("/") || isWinAbs) && (
+                lower.endsWith(".m3u8") || lower.endsWith(".mp4") ||
+                    lower.endsWith(".mkv") || lower.endsWith(".flv") || lower.endsWith(".ts")
+                )
+        ) {
+            return true
+        }
+        return false
     }
 
     private fun isHlsMrl(mrl: String): Boolean {

@@ -11,10 +11,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import com.corner.util.net.createDefaultOkHttpClient
 import org.slf4j.LoggerFactory
-import java.io.File
 import java.io.IOException
 import java.net.URI
-import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
@@ -41,7 +39,8 @@ object M3u8PlayUrlResolver {
 
         val alreadyLocal = urlStr.contains("proxy/cached_m3u8", ignoreCase = true) ||
             urlStr.contains("lumen-m3u8", ignoreCase = true) ||
-            (urlStr.startsWith("/") && urlStr.endsWith(".m3u8", ignoreCase = true))
+            (urlStr.startsWith("/") && urlStr.endsWith(".m3u8", ignoreCase = true)) ||
+            (urlStr.length >= 3 && urlStr[1] == ':' && urlStr.endsWith(".m3u8", ignoreCase = true))
         if (alreadyLocal) return result
 
         val looksLikeM3u8 = urlStr.contains("m3u8", ignoreCase = true)
@@ -55,7 +54,7 @@ object M3u8PlayUrlResolver {
         }
         if (processed.v() != urlStr) {
             result.url = processed
-            log.info("M3U8 已处理为本地播放地址: {}", processed.v())
+            log.info("M3U8 已处理为内存播放地址: {}", processed.v())
         }
         return result
     }
@@ -172,11 +171,9 @@ object M3u8PlayUrlResolver {
             log.info("展开嵌套 M3U8: {}", nestedUrl)
             processMediaPlaylist(Url().add(nestedUrl), headers).v()
         }
-        if (nestedExpanded !== withKeys && nestedExpanded.contains("lumen-m3u8")) {
+        if (nestedExpanded !== withKeys && nestedExpanded.contains("cached_m3u8")) {
             val localLine = nestedExpanded.lines().firstOrNull {
-                it.contains("lumen-m3u8") ||
-                    it.endsWith(".m3u8", ignoreCase = true) &&
-                    (it.startsWith("/") || (it.length >= 3 && it[1] == ':'))
+                it.contains("cached_m3u8", ignoreCase = true)
             }
             if (localLine != null) return Url().add(localLine.trim())
         }
@@ -209,8 +206,9 @@ object M3u8PlayUrlResolver {
         val dominant = keepDominantSegmentGroup(cleaned)
         log.info("M3U8 处理完成，分片数={}", dominant.lines().count { it.isNotBlank() && !it.startsWith("#") })
 
+        // 过滤后的列表放内存，经本地 Ktor 代理给 VLC（避免写临时文件 / Windows 路径问题）
         val processedTsContent = convertRelativeTsToAbsolute(dominant, raw)
-        return toLocalPlayUrl(processedTsContent)
+        return toMemoryPlayUrl(processedTsContent)
     }
 
     private fun stripNonVideoSegments(content: String): String {
@@ -309,21 +307,12 @@ object M3u8PlayUrlResolver {
         }
     }
 
-    private fun toLocalPlayUrl(content: String): Url {
-        val dir = File(System.getProperty("java.io.tmpdir"), "lumen-m3u8").apply { mkdirs() }
-        // 清理放到后台，不挡起播
-        if (dir.listFiles()?.size ?: 0 > 32) {
-            Thread({
-                dir.listFiles()
-                    ?.filter { it.isFile && System.currentTimeMillis() - it.lastModified() > 1_800_000L }
-                    ?.forEach { runCatching { it.delete() } }
-            }, "m3u8-cleanup").apply { isDaemon = true }.start()
-        }
-        val file = File(dir, "${UUID.randomUUID()}.m3u8")
-        file.writeText(content)
-        val path = file.absolutePath
-        log.info("M3U8 已写入本地文件: {}", path)
-        return Url().add(path)
+    private fun toMemoryPlayUrl(content: String): Url {
+        // 播放列表可能被 VLC 中途重拉，TTL 加长；分片仍走原始 CDN
+        val cacheId = M3U8Cache.put(content, expiryTimeMs = 3L * 60 * 60 * 1000)
+        val playUrl = "http://127.0.0.1:${KtorD.getPort()}/proxy/cached_m3u8?id=$cacheId"
+        log.info("M3U8 已缓存到内存: {}", playUrl)
+        return Url().add(playUrl)
     }
 
     private fun processEncryptionKeys(

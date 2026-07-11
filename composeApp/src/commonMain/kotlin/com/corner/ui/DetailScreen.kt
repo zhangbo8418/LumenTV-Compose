@@ -136,11 +136,15 @@ fun WindowScope.DetailScene(vm: DetailViewModel, onClickBack: () -> Unit) {
         localCurrentM3U8Url = DialogState.currentM3U8Url
     }
 
-    // 监听 WebSocket 连接状态
+    // WebSocket 仅用于 Web 播放器；初始 false ≠ 断连，避免进详情就刷「链接丢失」
     LaunchedEffect(BrowserUtils.webSocketConnectionState) {
+        var everConnected = false
         BrowserUtils.webSocketConnectionState.collect { isConnected ->
-            showWebSocketDisconnected = !isConnected
-            if (showWebSocketDisconnected) {
+            if (isConnected) {
+                everConnected = true
+                showWebSocketDisconnected = false
+            } else if (everConnected) {
+                showWebSocketDisconnected = true
                 log.info("WebSocket链接丢失")
             }
         }
