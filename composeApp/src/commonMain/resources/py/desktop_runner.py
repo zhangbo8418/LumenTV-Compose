@@ -5,6 +5,14 @@ import ssl
 import sys
 import traceback
 
+# embed Python（._pth 隔离）不会把脚本目录加入 sys.path；
+# 必须在 import app 之前把 runner / cache 目录挂上。
+_runner_dir = os.path.dirname(os.path.abspath(__file__))
+_cache_dir = sys.argv[1] if len(sys.argv) > 1 else _runner_dir
+for _p in (_runner_dir, _cache_dir):
+    if _p and _p not in sys.path:
+        sys.path.insert(0, _p)
+
 
 def _ensure_ssl_certs():
     """桌面 Python 常缺 CA；对齐可用 HTTPS（TV/Android 系统证书正常）。"""

@@ -64,6 +64,8 @@ class PySpiderProcess(
             put("PYTHONUNBUFFERED", "1")
             put("PYTHONUTF8", "1")
             put("PYTHONIOENCODING", "utf-8")
+            // embed 的 ._pth 不会把脚本/cwd 放进 sys.path；PYTHONPATH 作兜底，desktop_runner 也会自举
+            put("PYTHONPATH", cacheDir.absolutePath)
             python.home?.let { home ->
                 // Embed（python3xx._pth / python3xx.zip）不能设 PYTHONHOME，否则会找不到 encodings 立刻退出
                 if (python.embed) {
