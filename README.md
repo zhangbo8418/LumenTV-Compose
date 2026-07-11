@@ -34,8 +34,8 @@
 ## 核心功能
 
 ### 环境要求
-- **操作系统**: Windows 7/10/11（发行包自带 JDK 与 Win10 兼容库）, macOS (Intel / Apple Silicon), Linux
-- **发行包**: 已捆绑 Java 运行时、Python 3.12 与 ffmpeg，一般无需再装 JDK / Python / ffmpeg
+- **操作系统**: Windows 10/11（Win7 SP1 尽力兼容，Windows 捆绑 [Python-Win7](https://github.com/Alex313031/Python-Win7) embed）, macOS (Intel / Apple Silicon), Linux
+- **发行包**: 已捆绑 Java 运行时、Python 与 ffmpeg，一般无需再装 JDK / Python / ffmpeg；Windows 随包为 [Python-Win7](https://github.com/Alex313031/Python-Win7) embed + [Gyan ffmpeg 7.0](https://github.com/GyanD/codexffmpeg/releases/tag/7.0)（Win7 可用）
 - **开发调试**: 推荐本机 Java 17+；未执行 `prepareBundledPython` / `prepareBundledFfmpeg` 时可回退系统 `python3` / `ffmpeg`
 - **VLC 播放器**: 如需使用内部播放器，请安装 VLC（Windows 发行包已附带部分 VLC 原生库）
 
@@ -79,7 +79,7 @@
 - 支持使用 Playwright 爬虫，使用 Playwright 爬虫时，请确保已安装 Playwright。
 
 ### 平台支持
-本项目支持 `Windows (含 Win7 兼容策略) / Linux / macOS arm64 / macOS amd64`。GitHub Actions 会分别打包 macOS Apple Silicon 与 Intel 产物。
+本项目支持 `Windows（含 Win7 尽力兼容） / Linux / macOS arm64 / macOS amd64`。GitHub Actions 会分别打包 macOS Apple Silicon 与 Intel 产物。Windows 随包 Python 使用 [Alex313031/Python-Win7](https://github.com/Alex313031/Python-Win7) embed（含 `api-ms-win-core-path`）。
 
 ## 更新日志 (Changelog)
 您可以从以下链接查看更新历史日志：

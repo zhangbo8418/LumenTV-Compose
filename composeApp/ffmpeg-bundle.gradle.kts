@@ -44,9 +44,11 @@ fun resolveFfmpegTarget(platformOverride: String?): FfmpegTarget {
             binaryRelativeHints = listOf("ffmpeg", "bin/ffmpeg"),
         )
         "windows-x64" -> FfmpegTarget(
+            // Gyan 7.0 是最后明确支持 Win7/8 的 full 静态包；BtbN 旧 Win7 构建已下架
+            // https://www.gyan.dev/ffmpeg/builds/ （release builds notes）
             platform = platform,
-            url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
-            archiveName = "ffmpeg-master-latest-win64-gpl.zip",
+            url = "https://github.com/GyanD/codexffmpeg/releases/download/7.0/ffmpeg-7.0-full_build.zip",
+            archiveName = "ffmpeg-7.0-full_build.zip",
             binaryRelativeHints = listOf("ffmpeg.exe", "bin/ffmpeg.exe"),
         )
         "linux-x64" -> FfmpegTarget(

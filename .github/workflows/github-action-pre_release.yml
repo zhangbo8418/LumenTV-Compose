@@ -25,6 +25,15 @@ jobs:
           java-version: 17
           cache: 'gradle'
 
+      - name: 🐍 Set up Python (host pip for Win7 embed wheels)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 🐍 Prepare bundled Python (Win7 embed)
+        shell: pwsh
+        run: ./gradlew prepareBundledPython "-Plumen.python.platform=windows-x64"
+
       - name: 🏗️ Build LumenTV Windows
         run: |
           echo "🔨 开始构建 LumenTV Windows 版本"

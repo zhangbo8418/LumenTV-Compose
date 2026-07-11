@@ -27,8 +27,15 @@ jobs:
           distribution: 'temurin'
           java-version: 17
           cache: 'gradle'
+      - name: 🐍 Set up Python (host pip for Win7 embed wheels)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - run: echo ${{needs.set-tag.outputs.tag}}
       - run: ls
+      - name: 🐍 Prepare bundled Python (Win7 embed)
+        shell: pwsh
+        run: ./gradlew prepareBundledPython "-Plumen.python.platform=windows-x64"
       - name: 🎬 Prepare bundled ffmpeg (windows-x64)
         # PowerShell 会把 -Plumen.xxx 拆成任务名，必须给 -P 参数加引号
         shell: pwsh

@@ -1570,9 +1570,13 @@ class DetailViewModel : BaseViewModel() {
         ) {
             return true
         }
-        if (u.startsWith("/") && (
+        // 本地缓存 m3u8：Windows 为 C:\...\lumen-m3u8\xxx.m3u8，不能只认 Unix 的 /
+        if (lower.contains("lumen-m3u8") || lower.contains("cached_m3u8")) return true
+        val isWinAbs = u.length >= 3 && u[0].isLetter() && u[1] == ':' &&
+            (u[2] == '\\' || u[2] == '/')
+        if ((u.startsWith("/") || isWinAbs) && (
                 lower.endsWith(".m3u8") || lower.endsWith(".mp4") ||
-                    lower.contains("lumen-m3u8") || lower.contains("cached_m3u8")
+                    lower.endsWith(".mkv") || lower.endsWith(".flv") || lower.endsWith(".ts")
                 )
         ) {
             return true

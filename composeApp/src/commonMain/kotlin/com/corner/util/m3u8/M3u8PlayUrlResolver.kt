@@ -174,7 +174,9 @@ object M3u8PlayUrlResolver {
         }
         if (nestedExpanded !== withKeys && nestedExpanded.contains("lumen-m3u8")) {
             val localLine = nestedExpanded.lines().firstOrNull {
-                it.contains("lumen-m3u8") || (it.startsWith("/") && it.endsWith(".m3u8", ignoreCase = true))
+                it.contains("lumen-m3u8") ||
+                    it.endsWith(".m3u8", ignoreCase = true) &&
+                    (it.startsWith("/") || (it.length >= 3 && it[1] == ':'))
             }
             if (localLine != null) return Url().add(localLine.trim())
         }

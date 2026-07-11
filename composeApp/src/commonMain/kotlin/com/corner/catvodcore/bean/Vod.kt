@@ -101,11 +101,16 @@ data class Vod(
         }
 
         fun List<Episode>.getPage(index: Int): MutableList<Episode> {
-            val list = this.subList(
-                index * Constants.EP_SIZE,
-                if (index * Constants.EP_SIZE + Constants.EP_SIZE > size) size else index * Constants.EP_SIZE + Constants.EP_SIZE
-            ).toMutableList()
-            return list
+            if (isEmpty()) return mutableListOf()
+            val pageSize = Constants.EP_SIZE
+            val from = (index.coerceAtLeast(0) * pageSize).coerceAtMost(size)
+            // 换线后集数变少时，旧 tab 页码可能越界（fromIndex > toIndex）
+            if (from >= size) {
+                val lastPageStart = ((size - 1) / pageSize) * pageSize
+                return subList(lastPageStart, size).toMutableList()
+            }
+            val to = (from + pageSize).coerceAtMost(size)
+            return subList(from, to).toMutableList()
         }
     }
 
