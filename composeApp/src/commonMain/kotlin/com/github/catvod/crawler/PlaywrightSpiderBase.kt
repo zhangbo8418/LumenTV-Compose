@@ -4,7 +4,7 @@ import com.corner.util.jcef.JcefBrowserManager
 import kotlinx.coroutines.runBlocking
 
 /**
- * 需要内嵌浏览器的爬虫基类（原 PlaywrightSpiderBase，已改为 JCEF）。
+ * 需要内嵌浏览器的爬虫基类。
  */
 abstract class JcefSpiderBase : Spider() {
 

@@ -12,7 +12,7 @@ import org.slf4j.LoggerFactory
 
 /**
  * JCEF 不可用时的轻量兜底：对 jx+url 做 HTTP 跟随重定向 / JSON / 正文嗅探。
- * 无法替代完整浏览器（v.qq 等强 JS 页仍需 JCEF），但能覆盖不少简单网关。
+ * 无法替代完整浏览器，但能覆盖不少简单网关。
  */
 object HttpJxSniffer {
     private val log = LoggerFactory.getLogger("HttpJxSniffer")

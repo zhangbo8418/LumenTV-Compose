@@ -34,6 +34,10 @@ jobs:
         shell: pwsh
         run: ./gradlew prepareBundledPython "-Plumen.python.platform=windows-x64"
 
+      - name: 🌐 Prepare bundled JCEF (windows-x64, Chromium 109)
+        shell: pwsh
+        run: ./gradlew prepareBundledJcef "-Plumen.jcef.platform=windows-x64"
+
       - name: 🏗️ Build LumenTV Windows
         run: |
           echo "🔨 开始构建 LumenTV Windows 版本"
@@ -101,6 +105,9 @@ jobs:
       - name: 🎬 Prepare bundled ffmpeg (macos-arm64)
         run: ./gradlew prepareBundledFfmpeg "-Plumen.ffmpeg.platform=macos-arm64"
 
+      - name: 🌐 Prepare bundled JCEF (macos-arm64)
+        run: ./gradlew prepareBundledJcef "-Plumen.jcef.platform=macos-arm64"
+
       - name: 🏗️ Package macOS arm64
         run: |
           ./gradlew createReleaseDistributable packageReleaseDistributionForCurrentOS
@@ -146,6 +153,9 @@ jobs:
 
       - name: 🎬 Prepare bundled ffmpeg (macos-x64)
         run: arch -x86_64 ./gradlew prepareBundledFfmpeg "-Plumen.ffmpeg.platform=macos-x64"
+
+      - name: 🌐 Prepare bundled JCEF (macos-x64)
+        run: arch -x86_64 ./gradlew prepareBundledJcef "-Plumen.jcef.platform=macos-x64"
 
       - name: 🏗️ Package macOS amd64
         run: |

@@ -6,7 +6,7 @@ import com.corner.util.jcef.JcefBrowserManager
 import org.slf4j.LoggerFactory
 
 /**
- * Web 解析入口：优先 JCEF（对齐 TV WebView），失败再 HTTP 轻量嗅探。
+ * Web 解析入口：优先内嵌浏览器嗅探，失败再 HTTP 轻量嗅探。
  */
 object LiveWebParser {
     private val log = LoggerFactory.getLogger("LiveWebParser")

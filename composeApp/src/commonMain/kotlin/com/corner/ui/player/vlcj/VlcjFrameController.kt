@@ -81,20 +81,20 @@ class VlcjFrameController(
         frameRenderer.clearFrameSoft()
     }
 
-    /** 换集：先停渲染再打断 VLC，避免 display 回调与 stop 互锁卡死 UI */
+    /** 换集：先停渲染并解绑 surface，限时中断 VLC；勿在 stop 未完成前绑回 surface */
     suspend fun stopForRefreshAndAwait() {
         frameRenderer.pauseRendering()
         frameRenderer.clearFrameSoft()
+        detachVideoSurface()
         controller.stopForRefresh()
-        // 给 vlc-abort 一点时间离开 native，再绑回 surface
-        delay(50)
-        attachVideoSurface()
-        frameRenderer.resumeRendering()
+        controller.awaitLastAbort(2_000L)
+        // 等下次 loadURL → resumeVideoRendering 再绑 surface，避免与卡死的 stop 互锁
     }
 
     fun stopForRefresh() {
         frameRenderer.pauseRendering()
         frameRenderer.clearFrameSoft()
+        detachVideoSurface()
         controller.stopForRefresh()
     }
 
@@ -123,7 +123,7 @@ class VlcjFrameController(
 
     fun prepareForEpisodeSwitch() {
         clearVideoFrame()
-        frameRenderer.resumeRendering()
+        // 保持暂停；由后续 loadURL → resumeVideoRendering 恢复
         controller.markBufferingForSwitch()
     }
 
@@ -131,6 +131,9 @@ class VlcjFrameController(
         try {
             val lifecycleManager = PlayerLifecycleManager(controller)
             controller.setLifecycleManager(lifecycleManager)
+            controller.onPlayerRecreated = { _ ->
+                attachVideoSurface()
+            }
             controller.init()
             
             videoSurface = frameRenderer.createVideoSurface()

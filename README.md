@@ -35,8 +35,8 @@
 
 ### 环境要求
 - **操作系统**: Windows 10/11（Win7 SP1 尽力兼容，Windows 捆绑 [Python-Win7](https://github.com/Alex313031/Python-Win7) embed）, macOS (Intel / Apple Silicon), Linux
-- **发行包**: 已捆绑 Java 运行时、Python 与 ffmpeg，一般无需再装 JDK / Python / ffmpeg；Windows 随包为 [Python-Win7](https://github.com/Alex313031/Python-Win7) embed + [Gyan ffmpeg 7.0](https://github.com/GyanD/codexffmpeg/releases/tag/7.0)（Win7 可用）
-- **开发调试**: 推荐本机 Java 17+；未执行 `prepareBundledPython` / `prepareBundledFfmpeg` 时可回退系统 `python3` / `ffmpeg`
+- **发行包**: 已捆绑 Java 运行时、Python、ffmpeg 与 Chromium 109（JCEF，Win7 可用），一般无需再装 JDK / Python / ffmpeg / 浏览器组件；Windows 随包为 [Python-Win7](https://github.com/Alex313031/Python-Win7) embed + [Gyan ffmpeg 7.0](https://github.com/GyanD/codexffmpeg/releases/tag/7.0)
+- **开发调试**: 推荐本机 Java 17+；未执行 `prepareBundledPython` / `prepareBundledFfmpeg` / `prepareBundledJcef` 时可回退系统工具或按需下载 JCEF
 - **VLC 播放器**: 如需使用内部播放器，请安装 VLC（Windows 发行包已附带部分 VLC 原生库）
 
 ### 爬虫支持
@@ -44,7 +44,7 @@
 - JS 引擎基于 QuickJS（`wang.harlon.quickjs`）
 - Python 爬虫随发行包内置（`requests` / `lxml` / `pycryptodome` / `certifi`）；开发时可 `./gradlew prepareBundledPython`
 - 视频下载合并用 ffmpeg 随发行包内置；开发时可 `./gradlew prepareBundledFfmpeg`
-- 网页解析 / WAF 场景使用内嵌 Chromium（JCEF），首次使用需下载原生包
+- 网页解析使用内嵌 Chromium 109（Win7 可用）；发行包已捆绑，一般无需再下载
 
 ### 混淆M3U8链接播放
 本项目支持播放经过简单混淆的M3U8文件，如果遇到通过图床传输数据的M3U8文件时会切换到系统默认浏览器播放。
@@ -75,8 +75,8 @@
 - 支持 DLNA投屏功能，同时支持内部/外部播放器播放
 - 支持控制手机控制进度条/音量设置。(仅内部播放器支持)
 
-### 内嵌浏览器（JCEF）
-- Web 解析与需浏览器环境的爬虫使用 JCEF（内嵌 Chromium），首次使用会提示下载原生包；可在设置页管理。
+### 内嵌浏览器
+- 发行包捆绑 Chromium 109（Win7 可用）用于网页解析；无随包时也可在设置页下载。
 
 ### 平台支持
 本项目支持 `Windows（含 Win7 尽力兼容） / Linux / macOS arm64 / macOS amd64`。GitHub Actions 会分别打包 macOS Apple Silicon 与 Intel 产物。Windows 随包 Python 使用 [Alex313031/Python-Win7](https://github.com/Alex313031/Python-Win7) embed（含 `api-ms-win-core-path`）。

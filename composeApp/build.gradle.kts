@@ -105,7 +105,7 @@ kotlin {
                 implementation(libs.jupnp.support)
                 implementation(libs.jupnp.osgi)
 
-                // JCEF embedded Chromium（对齐 TV WebView 嗅探）
+                // JCEF（Chromium 109，Win7 可用）
                 implementation(libs.jcefmaven)
 
                 // QuickJS for JS spider support
@@ -173,6 +173,7 @@ kotlin {
 
 apply(from = "python-bundle.gradle.kts")
 apply(from = "ffmpeg-bundle.gradle.kts")
+apply(from = "jcef-bundle.gradle.kts")
 
 compose.desktop {
     application {
@@ -239,3 +240,4 @@ compose.desktop {
 
     }
 }
+

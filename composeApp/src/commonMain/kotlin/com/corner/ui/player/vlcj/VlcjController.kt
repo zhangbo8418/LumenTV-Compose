@@ -142,24 +142,100 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
     }
 
     /**
-     * 从独立线程 stop，打断可能卡住的 native play。
+     * 从独立线程尝试 stop；超时则丢弃旧 MediaPlayer 并重建，避免 libvlc 死锁卡死整窗。
      */
     private val abortEpoch = AtomicInteger(0)
     @Volatile
     private var lastAbortAtMs: Long = 0L
+    @Volatile
+    private var abortLatch: java.util.concurrent.CountDownLatch? = null
+    @Volatile
+    var onPlayerRecreated: ((EmbeddedMediaPlayer) -> Unit)? = null
 
     private fun abortStuckVlcLoad(reason: String) {
         abortEpoch.incrementAndGet()
         lastAbortAtMs = System.currentTimeMillis()
         currentLoadFuture = null
+        val epoch = abortEpoch.get()
+        val latch = java.util.concurrent.CountDownLatch(1)
+        abortLatch = latch
         Thread({
             try {
                 log.info("中断 VLC 加载: {}", reason)
-                runCatching { player?.controls()?.stop() }
+                val old = player ?: return@Thread
+                val stopExec = Executors.newSingleThreadExecutor { r ->
+                    Thread(r, "vlc-stop-try").apply { isDaemon = true }
+                }
+                try {
+                    val fut = stopExec.submit<Unit> {
+                        runCatching { old.controls()?.stop() }
+                    }
+                    try {
+                        fut.get(1_200L, TimeUnit.MILLISECONDS)
+                        log.info("VLC stop 完成: {}", reason)
+                    } catch (_: TimeoutException) {
+                        fut.cancel(true)
+                        log.warn("VLC stop 超时，强制重建播放器: {}", reason)
+                        if (abortEpoch.get() == epoch) {
+                            forceReplacePlayer(old, reason)
+                        }
+                    } catch (e: Exception) {
+                        log.warn("VLC stop 异常: {}", e.message)
+                        if (abortEpoch.get() == epoch) {
+                            forceReplacePlayer(old, reason)
+                        }
+                    }
+                } finally {
+                    stopExec.shutdownNow()
+                }
             } catch (e: Exception) {
                 log.warn("中断 VLC 加载失败: {}", e.message)
+            } finally {
+                latch.countDown()
+                if (abortLatch === latch) abortLatch = null
             }
         }, "vlc-abort").apply { isDaemon = true }.start()
+    }
+
+    /** 供换集协程等待 abort 结束（带超时，绝不永久阻塞） */
+    suspend fun awaitLastAbort(timeoutMs: Long = 2_000L) {
+        val latch = abortLatch ?: return
+        withContext(Dispatchers.IO) {
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        }
+    }
+
+    /**
+     * stop 卡死时：立刻换新 MediaPlayer，旧实例后台尽力释放（永不 join）。
+     */
+    private fun forceReplacePlayer(stuck: MediaPlayer, reason: String) {
+        val neu = synchronized(vlcStateLock) {
+            if (player !== stuck && player != null) {
+                log.info("播放器已替换，跳过重建: {}", reason)
+                return
+            }
+            val created = runCatching {
+                factory?.mediaPlayers()?.newEmbeddedMediaPlayer()?.apply {
+                    events().addMediaPlayerEventListener(stateListener)
+                    video().setScale(0.0f)
+                    val muted = audio()?.isMute ?: false
+                    _state.update { it.copy(isMuted = muted) }
+                }
+            }.onFailure { log.error("重建 MediaPlayer 失败", it) }.getOrNull()
+            if (created == null) {
+                log.error("无法重建 MediaPlayer: {}", reason)
+                return
+            }
+            player = created
+            created
+        }
+        runCatching { onPlayerRecreated?.invoke(neu) }
+            .onFailure { log.warn("重建后回调失败: {}", it.message) }
+        Thread({
+            runCatching { stuck.controls()?.stop() }
+            runCatching { stuck.release() }
+            log.info("已丢弃卡死的旧 MediaPlayer: {}", reason)
+        }, "vlc-abandon").apply { isDaemon = true }.start()
     }
 
     /** 保留：异常场景下重建（当前 loadURL 已不依赖此队列起播） */
@@ -642,18 +718,14 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
         loadStartedAtMs = System.currentTimeMillis()
         startTrafficMonitor()
         _state.update { it.copy(state = PlayState.BUFFERING, bufferProgression = 0f) }
-        // 交给 VLC native 队列，立刻返回，避免阻塞换集
+        // 交给 VLC native 队列，立刻返回，避免阻塞换集。
+        // 不要先 controls().stop()：与 display/play 并发时易在 libvlc 内死锁。
         p.submit {
             if (isLoadGenerationStale(generation)) {
                 log.info("丢弃过期 loadURL(native): generation={}", generation)
                 return@submit
             }
             try {
-                runCatching { p.controls().stop() }
-                if (isLoadGenerationStale(generation)) {
-                    log.info("丢弃过期 loadURL(native): stop 后 generation={}", generation)
-                    return@submit
-                }
                 val ok = p.media().play(url, *buildMediaOptions().toTypedArray())
                 if (isLoadGenerationStale(generation)) {
                     log.info("loadURL 完成后已过期，忽略 generation={}", generation)

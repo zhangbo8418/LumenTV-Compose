@@ -2378,7 +2378,7 @@ fun resetDohSetting() {
 }
 
 /**
- * JCEF 内嵌浏览器设置（对齐 TV WebView）
+ * 内嵌浏览器设置
  */
 @Composable
 fun JcefSettingsContent(
@@ -2472,7 +2472,7 @@ fun JcefSettingsContent(
                         InfoRow(label = "安装目录", value = installDir)
                     } else {
                         Text(
-                            text = "尚未安装。网页解析（对齐 TV WebView）需要内嵌 Chromium。",
+                            text = "尚未安装。网页解析需要内嵌 Chromium 109；发行包若已捆绑，点「准备」即可。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -2486,7 +2486,7 @@ fun JcefSettingsContent(
                             Button(onClick = { showDownloadDialog = true }, modifier = Modifier.weight(1f)) {
                                 Icon(Icons.Default.Download, null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
-                                Text("下载浏览器")
+                                Text("准备浏览器")
                             }
                         } else {
                             OutlinedButton(onClick = { showDownloadDialog = true }, modifier = Modifier.weight(1f)) {
@@ -2513,9 +2513,9 @@ fun JcefSettingsContent(
         item {
             SettingCard(title = "说明", icon = Icons.Default.Info) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("• JCEF 是进程内嵌 Chromium，用于网页解析嗅探，对应 TV 的 WebView", style = MaterialTheme.typography.bodySmall)
-                    Text("• 首次使用会下载原生组件（约 100MB+）", style = MaterialTheme.typography.bodySmall)
-                    Text("• 已移除 Playwright；请使用本页管理浏览器", style = MaterialTheme.typography.bodySmall)
+                    Text("• 内嵌 Chromium 109（Win7 可用），用于网页解析", style = MaterialTheme.typography.bodySmall)
+                    Text("• 发行包一般已捆绑；无随包时会下载约 100MB+ 原生组件", style = MaterialTheme.typography.bodySmall)
+                    Text("• 清除仅删除用户目录副本，不影响发行包内文件", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -2541,7 +2541,7 @@ fun JcefSettingsContent(
         AlertDialog(
             onDismissRequest = { showClearCacheDialog = false },
             title = { Text("确认清除") },
-            text = { Text("将删除已下载的 JCEF 原生文件，下次使用需重新下载。") },
+            text = { Text("将删除用户目录中的浏览器文件。若发行包已捆绑，下次可再从随包复制。") },
             confirmButton = {
                 Button(
                     onClick = { clearCache() },

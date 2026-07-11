@@ -1,8 +1,10 @@
 package com.corner.util.jcef
 
 import com.corner.ui.scene.SnackBar
+import com.corner.util.core.Constants
 import com.corner.util.core.thisLogger
 import com.corner.util.io.Paths
+import com.corner.util.system.SysVerUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -18,7 +20,8 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * JCEF（内嵌 Chromium）管理：对齐 TV 内嵌 WebView，替代原 Playwright 外挂浏览器。
+ * JCEF（内嵌 Chromium 109）管理。
+ * 优先使用发行包内 `appResources/.../jcef-bundle`，复制到可写 userData 后再初始化。
  */
 object JcefBrowserManager {
     private val log = thisLogger()
@@ -32,14 +35,14 @@ object JcefBrowserManager {
     @Volatile
     private var availableCached: Boolean? = null
 
+    /** Cef 实际安装目录（可写 userData） */
     fun getInstallDir(): File = Paths.jcefBundle()
 
-    fun isNativeInstalled(): Boolean {
-        val dir = getInstallDir()
-        if (!dir.isDirectory) return false
-        // jcefmaven 解压后会有 libcef / jcef 等 native；用目录非空近似判断
-        return dir.listFiles()?.isNotEmpty() == true
-    }
+    fun findBundledDir(): File? =
+        bundledCandidates().firstOrNull { isValidJcefDir(it) }
+
+    fun isNativeInstalled(): Boolean =
+        isValidJcefDir(getInstallDir()) || findBundledDir() != null
 
     fun isAvailable(): Boolean {
         availableCached?.let { return it }
@@ -47,11 +50,12 @@ object JcefBrowserManager {
     }
 
     fun requestBrowserInstall(reason: String = "") {
+        if (findBundledDir() != null) return
         if (!installPrompted.compareAndSet(false, true)) return
         log.info("请求安装 JCEF: {}", reason.ifBlank { "未说明" })
         _installRequested.tryEmit(reason.ifBlank { "网页解析需要内嵌浏览器" })
         SnackBar.postMsg(
-            "网页解析需要内嵌 Chromium（JCEF），请确认下载",
+            "网页解析需要内嵌浏览器，请确认下载",
             type = SnackBar.MessageType.WARNING,
         )
     }
@@ -62,7 +66,7 @@ object JcefBrowserManager {
     }
 
     /**
-     * 确保原生包已下载并完成 CefApp 初始化。
+     * 确保原生包就绪并完成 CefApp 初始化。
      * @param onProgress 0.0–1.0
      */
     suspend fun ensureReady(onProgress: ((Double) -> Unit)? = null): Result<CefApp> =
@@ -73,7 +77,8 @@ object JcefBrowserManager {
                     return@withContext Result.success(it)
                 }
                 try {
-                    SnackBar.postMsg("正在准备内嵌浏览器（JCEF）…", type = SnackBar.MessageType.INFO)
+                    prepareInstallDirFromBundle(onProgress)
+                    SnackBar.postMsg("正在准备内嵌浏览器…", type = SnackBar.MessageType.INFO)
                     val builder = CefAppBuilder()
                     builder.setInstallDir(getInstallDir())
                     builder.getCefSettings().windowless_rendering_enabled = true
@@ -128,5 +133,40 @@ object JcefBrowserManager {
         }
         cefApp = null
         availableCached = null
+    }
+
+    private fun prepareInstallDirFromBundle(onProgress: ((Double) -> Unit)?) {
+        val installDir = getInstallDir()
+        if (isValidJcefDir(installDir)) {
+            onProgress?.invoke(0.3)
+            return
+        }
+        val bundled = findBundledDir() ?: return
+        log.info("从随包目录复制 JCEF: {} -> {}", bundled.absolutePath, installDir.absolutePath)
+        onProgress?.invoke(0.05)
+        if (installDir.exists()) installDir.deleteRecursively()
+        installDir.mkdirs()
+        bundled.copyRecursively(installDir, overwrite = true)
+        onProgress?.invoke(0.35)
+    }
+
+    private fun isValidJcefDir(dir: File): Boolean {
+        if (!dir.isDirectory) return false
+        val files = dir.listFiles() ?: return false
+        // 忽略仅有标记文件的空壳
+        return files.any { it.isFile && it.name != ".lumen-jcef-bundle" } ||
+            files.any { it.isDirectory }
+    }
+
+    private fun bundledCandidates(): List<File> {
+        val roots = mutableListOf<File>()
+        System.getProperty(Constants.RES_PATH_KEY)?.takeIf { it.isNotBlank() }?.let { res ->
+            roots += File(res, "jcef-bundle")
+        }
+        val platform = SysVerUtil.getAppResourcesPlatform()
+        val userDir = System.getProperty("user.dir")
+        roots += File(userDir, "src/desktopMain/appResources/$platform/jcef-bundle")
+        roots += File(userDir, "composeApp/src/desktopMain/appResources/$platform/jcef-bundle")
+        return roots.distinctBy { it.absolutePath }
     }
 }

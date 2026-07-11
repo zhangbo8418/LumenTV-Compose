@@ -24,7 +24,7 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 对齐 TV CustomWebView：内嵌 Chromium 拦请求嗅探媒体地址。
+ * 内嵌 Chromium 拦截请求，嗅探媒体地址。
  */
 object JcefWebViewSniffer {
     private val log = LoggerFactory.getLogger("JcefWebViewSniffer")

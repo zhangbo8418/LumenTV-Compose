@@ -43,8 +43,9 @@ koin = "3.5.3"
 # Coroutines
 kotlinx-coroutines = "1.7.3"
 
-# JCEF embedded Chromium (TV WebView 对齐)
-jcefmaven = "146.0.10"
+# JCEF / Chromium 109（Win7 可用上限）
+jcefmaven = "109.1.11.1"
+jcef-natives = "jcef-854af1f+cef-109.1.11+g6d4fdb2+chromium-109.0.5414.87"
 quickjs = "3.2.3"
 
 
@@ -135,6 +136,11 @@ jupnp-support = { module = "org.jupnp:org.jupnp.support", version.ref = "jupnp" 
 
 # JCEF
 jcefmaven = { module = "me.friwi:jcefmaven", version.ref = "jcefmaven" }
+jcef-natives-windows-amd64 = { module = "me.friwi:jcef-natives-windows-amd64", version.ref = "jcef-natives" }
+jcef-natives-macosx-arm64 = { module = "me.friwi:jcef-natives-macosx-arm64", version.ref = "jcef-natives" }
+jcef-natives-macosx-amd64 = { module = "me.friwi:jcef-natives-macosx-amd64", version.ref = "jcef-natives" }
+jcef-natives-linux-amd64 = { module = "me.friwi:jcef-natives-linux-amd64", version.ref = "jcef-natives" }
+jcef-natives-linux-arm64 = { module = "me.friwi:jcef-natives-linux-arm64", version.ref = "jcef-natives" }
 
 # QuickJS
 quickjs-java = { module = "wang.harlon.quickjs:wrapper-java", version.ref = "quickjs" }

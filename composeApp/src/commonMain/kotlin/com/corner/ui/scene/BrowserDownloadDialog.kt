@@ -10,7 +10,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 
 /**
- * 内嵌浏览器（JCEF）下载确认对话框
+ * 内嵌浏览器下载确认对话框
  */
 @Composable
 fun BrowserDownloadDialog(
@@ -43,7 +43,7 @@ fun BrowserDownloadDialog(
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
                     text = "$reason\n\n" +
-                        "将下载 Chromium 组件（JCEF，约 100MB+），用于网页解析嗅探，对齐 TV 内嵌 WebView。\n\n" +
+                        "将下载 Chromium 109 组件（约 100MB+），用于网页解析。发行包若已捆绑则可跳过下载。\n\n" +
                         "也可在设置 > 浏览器 中手动管理。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
