@@ -34,6 +34,7 @@ import androidx.compose.ui.window.WindowScope
 import com.corner.catvodcore.bean.Vod
 import com.corner.catvodcore.bean.Collect
 import com.corner.catvodcore.config.ApiConfig
+import com.corner.catvodcore.viewmodel.GlobalAppState
 import com.corner.ui.nav.vm.SearchViewModel
 import com.corner.ui.navigation.SearchScreen
 import com.corner.ui.scene.ControlBar
@@ -62,6 +63,16 @@ fun WindowScope.SearchScene(
     var currentPage by remember { mutableStateOf(SearchScreen.Search) }
     var isClicking by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val pendingSearch by GlobalAppState.pendingSearch.collectAsState()
+
+    LaunchedEffect(pendingSearch) {
+        if (pendingSearch.isNotBlank()) {
+            vm.onSearch(pendingSearch)
+            vm.search(pendingSearch, false)
+            currentPage = SearchScreen.SearchResult
+            GlobalAppState.pendingSearch.value = ""
+        }
+    }
 
     // 处理返回逻辑
     val handleBack = {

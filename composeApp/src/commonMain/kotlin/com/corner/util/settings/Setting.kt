@@ -81,6 +81,7 @@ data class SettingFile(val list: MutableList<Setting>, val cache: MutableMap<Str
 enum class SettingType(val id: String) {
     PLAYER("player"),
     VOD("vod"),
+    LIVE("live"),
     LOG("log"),
     SEARCHHISTORY("searchHistory"),
     PROXY("proxy"),
@@ -91,24 +92,54 @@ enum class SettingType(val id: String) {
     DOH_ENABLED("dohEnabled"),
     DOH_SERVER("dohServer"),
     FPS_MONITOR("fpsMonitor"),
-    MINI_PROGRESS_BAR("miniProgressBar");
-
+    MINI_PROGRESS_BAR("miniProgressBar"),
+    LIVE_ACROSS("liveAcross"),
+    LIVE_AUTO_LINE("liveAutoLine"),
+    LIVE_INVERT("liveInvert"),
+    ARIA2_ENABLED("aria2Enabled"),
+    ARIA2_RPC("aria2Rpc"),
+    ARIA2_SECRET("aria2Secret"),
+    ARIA2_DIR("aria2Dir"),
+    DANMAKU_LOAD("danmakuLoad"),
+    DANMAKU_AUTO("danmakuAuto"),
+    DANMAKU_SHOW("danmakuShow"),
+    DANMAKU_API_URL("danmakuApiUrl"),
+    DANMAKU_TEXT_SCALE("danmakuTextScale"),
+    DANMAKU_DURATION("danmakuDuration"),
+    DANMAKU_MAX_ON_SCREEN("danmakuMaxOnScreen"),
+    DANMAKU_SPIDER_FIRST("danmakuSpiderFirst");
 }
 
 object SettingStore {
     private val defaultList = listOf(
         Setting("vod", "点播", ""),
+        Setting("live", "直播", ""),
         Setting("log", "日志级别", Level.INFO.toString()),
         Setting("player", "播放器", "innie#"),
         Setting("proxy", "代理", "false#"),
-        Setting("theme", "主题", "light"),
+        Setting("theme", "主题", "system"),
         Setting("adFilter", "广告过滤", "true"),
         Setting("m3u8FilterConfig", "M3U8 过滤配置", ""),
         Setting("crawlerSearchTerms", "爬虫搜索词", "阿甘正传"),
         Setting("dohEnabled", "DoH启用", "false"),
         Setting("dohServer", "DoH服务器", "Tencent"),
         Setting("fpsMonitor", "FPS监控", "false"),
-        Setting("miniProgressBar", "迷你进度条", "false")
+        Setting("miniProgressBar", "迷你进度条", "false"),
+        Setting("liveAcross", "直播跨分组换台", "true"),
+        Setting("liveAutoLine", "直播失败自动换线路", "true"),
+        Setting("liveInvert", "直播换台方向反转", "false"),
+        Setting("aria2Enabled", "aria2下载", "false"),
+        Setting("aria2Rpc", "aria2 RPC地址", "http://127.0.0.1:6800/jsonrpc"),
+        Setting("aria2Secret", "aria2 RPC密钥", ""),
+        Setting("aria2Dir", "aria2下载目录", ""),
+        Setting("danmakuLoad", "弹幕加载", "true"),
+        Setting("danmakuAuto", "弹幕自动搜索", "true"),
+        Setting("danmakuShow", "显示弹幕", "true"),
+        Setting("danmakuApiUrl", "弹幕API", ""),
+        Setting("danmakuTextScale", "弹幕字号", "1.0"),
+        Setting("danmakuDuration", "弹幕时长ms", "8000"),
+        Setting("danmakuMaxOnScreen", "弹幕最大数量", "80"),
+        Setting("danmakuSpiderFirst", "弹幕优先爬虫", "false")
     )
 
     private var settingFile = SettingFile(mutableListOf(), mutableMapOf())

@@ -37,7 +37,7 @@ class SearchViewModel : BaseViewModel() {
     fun onCreate() {
         log.debug("onCreate called")
         _state.value.searchableSites.addAll(ApiConfig.api.sites.filter {
-            it.searchable == 1 && !_state.value.searchCompleteSites.contains(
+            it.searchable == 1 && !it.isHide() && !_state.value.searchCompleteSites.contains(
                 it.key
             )
         }.shuffled().map { it.copy() })

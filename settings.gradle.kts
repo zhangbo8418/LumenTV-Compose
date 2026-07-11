@@ -47,3 +47,4 @@ dependencyResolutionManagement {
 }
 
 include(":composeApp")
+include(":quickjs-bridge")

@@ -304,11 +304,58 @@ object JarLoader {
         }
     }
 
+    fun jsonExt(key: String, jxs: LinkedHashMap<String, String>, url: String): String? {
+        return try {
+            val loader = requireRecentLoader()
+            val clz = loader.loadClass("com.github.catvod.parser.Json$key")
+            val method = clz.getMethod("parse", LinkedHashMap::class.java, String::class.java)
+            method.invoke(null, jxs, url)?.toString()
+        } catch (e: Exception) {
+            log.warn("jsonExt 调用失败: key={}", key, e)
+            null
+        }
+    }
+
+    fun jsonExtMix(
+        flag: String,
+        key: String,
+        name: String,
+        jxs: LinkedHashMap<String, HashMap<String, String>>,
+        url: String,
+    ): String? {
+        return try {
+            val loader = requireRecentLoader()
+            val clz = loader.loadClass("com.github.catvod.parser.Mix$key")
+            val method = clz.getMethod(
+                "parse",
+                LinkedHashMap::class.java,
+                String::class.java,
+                String::class.java,
+                String::class.java,
+            )
+            method.invoke(null, jxs, name, flag, url)?.toString()
+        } catch (e: Exception) {
+            log.warn("jsonExtMix 调用失败: key={}, name={}", key, name, e)
+            null
+        }
+    }
+
+    private fun requireRecentLoader(): ClassLoader {
+        val key = Utils.md5(recent ?: throw IllegalStateException("No jar loaded for recent key"))
+        return loaders[key] ?: throw IllegalStateException("No jar loader for key: $key")
+    }
+
     /**
      * 设置最近使用的jar包
      */
     fun setRecentJar(jar: String?) {
         recent = jar
+    }
+
+    fun getClassLoader(jar: String): ClassLoader? {
+        val jaKey = Utils.md5(jar)
+        if (loaders[jaKey] == null) loadJar(jaKey, jar)
+        return loaders[jaKey]
     }
 }
 

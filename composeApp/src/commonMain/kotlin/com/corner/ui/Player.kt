@@ -46,6 +46,7 @@ import com.corner.util.settings.SettingType
 import com.corner.util.net.Utils
 import com.corner.catvodcore.viewmodel.GlobalAppState
 import com.corner.ui.nav.vm.DetailViewModel
+import com.corner.ui.danmaku.DanmakuOverlay
 import com.corner.ui.player.DefaultControls
 import com.corner.ui.player.PlayerState
 import com.corner.ui.player.frame.FrameContainer
@@ -137,19 +138,7 @@ fun Player(
 
     val showCursor = remember { mutableStateOf(true) }
 
-    DisposableEffect(mrl) {
-        scope.launch {
-            if (StringUtils.isNotBlank(mrl)) {
-                player_log.debug("userTriggered : {},自动加载 mrl: {}", userTriggered, !userTriggered)
-                if (!userTriggered) {
-                    controller.load(mrl)
-                }
-                userTriggered = false
-            }
-        }
-        onDispose {
-        }
-    }
+    // 播放地址由 DetailViewModel 策略统一加载，避免与 DisposableEffect 重复触发 stop/load 竞态
 
     val onKeyEvent: (KeyEvent) -> Boolean = { keyEvent ->
         when {
@@ -265,6 +254,10 @@ fun Player(
         ) {
             showControllerBar.value = !showControllerBar.value
         }
+        DanmakuOverlay(
+            controller = controller,
+            modifier = Modifier.fillMaxSize().clip(roundedShape),
+        )
         AnimatedVisibility(
             showControllerBar.value,
             modifier = Modifier.align(Alignment.TopEnd),
@@ -290,12 +283,15 @@ fun Player(
             exit = fadeOut()
         ) {
             DefaultControls(
-                Modifier
+                modifier = Modifier
                     .height(80.dp)
-                    .align(Alignment.BottomEnd), controller, vm.state.value.detail
-            ) {
-                vm.clickShowEp()
-            }
+                    .align(Alignment.BottomEnd),
+                controller = controller,
+                vod = vm.state.value.detail,
+                onClickChooseEp = { vm.clickShowEp() },
+                showParse = vm.state.value.useParse,
+                onSelectParse = { parse -> vm.selectParse(parse) },
+            )
         }
 
         // 迷你进度条

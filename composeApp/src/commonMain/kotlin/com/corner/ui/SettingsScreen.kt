@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material.icons.filled.Web
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -72,7 +73,15 @@ import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.window.WindowScope
 import com.corner.service.player.PlayerType
 import com.corner.catvodcore.config.ApiConfig
+import com.corner.catvodcore.config.ConfigDepot
+import com.corner.catvodcore.config.ConfigUrlParser
+import com.corner.catvodcore.config.WallConfig
+import com.corner.database.entity.displayName
+import com.corner.catvodcore.setting.DanmakuSetting
 import com.corner.catvodcore.enum.ConfigType
+import com.corner.server.KtorD
+import com.corner.server.RemoteDeviceInfo
+import com.corner.util.net.NetworkUtil
 import com.corner.catvodcore.viewmodel.SiteViewModel
 import com.corner.util.AppVersion
 import com.corner.util.io.Paths
@@ -93,6 +102,7 @@ import lumentv_compose.composeapp.generated.resources.Res
 import java.awt.Desktop
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
+import java.awt.datatransfer.StringSelection
 import java.io.File
 import java.net.URI
 import androidx.compose.runtime.collectAsState
@@ -127,7 +137,7 @@ enum class SettingsCategory(
 @Composable
 fun WindowScope.SettingScene(vm: SettingViewModel, config: M3U8FilterConfig, onClickBack: () -> Unit) {
     val model = vm.state.collectAsState()
-    val isDarkTheme by GlobalAppState.isDarkTheme.collectAsState()
+    val themePreference by GlobalAppState.themePreference.collectAsState()
     val filterConfig = remember { mutableStateOf(SettingStore.getM3U8FilterConfig()) }
     val isAdFilterEnabled by remember { mutableStateOf(SettingStore.isAdFilterEnabled()) }
     var adFilterChecked by remember { mutableStateOf(isAdFilterEnabled) }
@@ -268,7 +278,7 @@ fun WindowScope.SettingScene(vm: SettingViewModel, config: M3U8FilterConfig, onC
                         SettingsCategory.GENERAL -> GeneralSettingsContent(
                             vm = vm,
                             model = model,
-                            isDarkTheme = isDarkTheme,
+                            themePreference = themePreference,
                             adFilterChecked = adFilterChecked,
                             onAdFilterChange = {
                                 adFilterChecked = it
@@ -371,7 +381,7 @@ fun SettingsNavigationRail(
 fun GeneralSettingsContent(
     vm: SettingViewModel,
     model: State<com.corner.ui.nav.data.SettingScreenState>,
-    isDarkTheme: Boolean,
+    themePreference: String,
     adFilterChecked: Boolean,
     onAdFilterChange: (Boolean) -> Unit,
     filterConfig: MutableState<M3U8FilterConfig>,
@@ -387,29 +397,105 @@ fun GeneralSettingsContent(
                 title = "主题设置",
                 icon = Icons.Default.Palette
             ) {
-                Row(
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = if (isDarkTheme) "当前主题：暗色模式" else "当前主题：亮色模式",
+                        text = "外观主题",
                         style = MaterialTheme.typography.bodyMedium
                     )
-                    Switch(
-                        checked = isDarkTheme,
-                        onCheckedChange = {
-                            GlobalAppState.isDarkTheme.value = it
-                            try {
-                                SettingStore.setValue(SettingType.THEME, if (it) "dark" else "light")
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                            }
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = MaterialTheme.colorScheme.primary,
-                            checkedTrackColor = MaterialTheme.colorScheme.primaryContainer
-                        )
+                    val options = listOf(
+                        "system" to "跟随系统",
+                        "dark" to "深色",
+                        "light" to "浅色",
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        options.forEach { (value, label) ->
+                            FilterChip(
+                                selected = themePreference == value,
+                                onClick = {
+                                    GlobalAppState.themePreference.value = value
+                                    try {
+                                        SettingStore.setValue(SettingType.THEME, value)
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                    }
+                                },
+                                label = { Text(label) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            SettingCard(
+                title = "壁纸",
+                icon = Icons.Default.Wallpaper
+            ) {
+                var wallUrl by remember {
+                    mutableStateOf(
+                        WallConfig.currentUrl
+                            ?: ApiConfig.api.wallpaper.orEmpty()
+                    )
+                }
+                LaunchedEffect(ApiConfig.api.wallpaper, WallConfig.currentUrl) {
+                    val preferred = WallConfig.currentUrl
+                        ?: ApiConfig.api.wallpaper.orEmpty()
+                    if (preferred.isNotBlank() && wallUrl.isBlank()) {
+                        wallUrl = preferred
+                    }
+                }
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = wallUrl,
+                        onValueChange = { wallUrl = it },
+                        label = { Text("壁纸 URL") },
+                        placeholder = { Text("https://... 或相对路径如 ../bing") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                WallConfig.init(wallUrl.trim().ifBlank { null })
+                                SnackBar.postMsg("正在应用壁纸", type = SnackBar.MessageType.INFO)
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text("应用")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                if (wallUrl.isBlank() && WallConfig.currentUrl.isNullOrBlank()) {
+                                    SnackBar.postMsg("请先填写壁纸 URL", type = SnackBar.MessageType.WARNING)
+                                } else if (wallUrl.isNotBlank()) {
+                                    WallConfig.init(wallUrl.trim())
+                                    SnackBar.postMsg("正在刷新壁纸", type = SnackBar.MessageType.INFO)
+                                } else {
+                                    WallConfig.refresh()
+                                    SnackBar.postMsg("正在刷新壁纸", type = SnackBar.MessageType.INFO)
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text("刷新")
+                        }
+                    }
+                    Text(
+                        text = "也可在点播 JSON 的 wallpaper 字段配置；相对路径按点播源基址解析。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -598,8 +684,8 @@ fun GeneralSettingsContent(
                             onClick = {
                                 SettingStore.reset()
                                 vm.sync()
-                                GlobalAppState.isDarkTheme.value =
-                                    SettingStore.getSettingItem(SettingType.THEME) == "dark"
+                                val theme = SettingStore.getSettingItem(SettingType.THEME).ifBlank { "system" }
+                                GlobalAppState.themePreference.value = theme
                                 SnackBar.postMsg("重置设置,重启生效", type = SnackBar.MessageType.INFO)
                                 showConfirmDialog = false
                             }
@@ -654,7 +740,7 @@ fun VodSettingsContent(
                 }
 
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    Box(Modifier.fillMaxSize()) {
+                    Box(Modifier.fillMaxWidth()) {
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -663,10 +749,9 @@ fun VodSettingsContent(
                                 value = textValue,
                                 onValueChange = { newValue ->
                                     textValue = newValue
-                                    SettingStore.setValue(SettingType.VOD, newValue)
-                                    vm.sync()
                                 },
-                                label = { Text("输入点播源地址") },
+                                label = { Text("点播源地址") },
+                                placeholder = { Text("http(s)/file 地址，或多个地址/仓库索引") },
                                 singleLine = true,
                                 modifier = Modifier
                                     .focusRequester(focusRequester)
@@ -701,8 +786,6 @@ fun VodSettingsContent(
                                                     val text = clipboard.getData(DataFlavor.stringFlavor) as? String
                                                     text?.let {
                                                         textValue = it
-                                                        SettingStore.setValue(SettingType.VOD, it)
-                                                        vm.sync()
                                                     }
                                                 } catch (e: Exception) {
                                                     log.error("粘贴失败: ${e.message}")
@@ -720,8 +803,16 @@ fun VodSettingsContent(
                             )
 
                             Button(
-                                onClick = { setConfig(textValue) },
-                                modifier = Modifier.height(60.dp).padding(top = 8.dp),
+                                onClick = {
+                                    setConfig(textValue) { activeUrl, ok ->
+                                        if (ok && !activeUrl.isNullOrBlank()) {
+                                            textValue = activeUrl
+                                        }
+                                        vm.getConfigAll()
+                                        vm.sync()
+                                    }
+                                },
+                                modifier = Modifier.height(56.dp),
                                 shape = RoundedCornerShape(12.dp),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = MaterialTheme.colorScheme.primary,
@@ -737,17 +828,27 @@ fun VodSettingsContent(
                                 modifier = Modifier.fillMaxWidth(0.8f),
                                 properties = PopupProperties(focusable = false)
                             ) {
-                                vodConfigList.value.forEach {
+                                vodConfigList.value
+                                    .filter { it.type == ConfigType.SITE.ordinal.toLong() }
+                                    .forEach { cfg ->
                                     DropdownMenuItem(
                                         modifier = Modifier.fillMaxWidth(),
-                                        text = { Text(it.url ?: "") },
+                                        text = {
+                                            Text(cfg.displayName())
+                                        },
                                         onClick = {
-                                            setConfig(it.url)
+                                            setConfig(cfg.url) { activeUrl, ok ->
+                                                if (ok && !activeUrl.isNullOrBlank()) {
+                                                    textValue = activeUrl
+                                                }
+                                                vm.getConfigAll()
+                                                vm.sync()
+                                            }
                                             isExpand.value = false
                                         },
                                         trailingIcon = {
                                             IconButton(onClick = {
-                                                vm.deleteHistoryById(it)
+                                                vm.deleteHistoryById(cfg)
                                             }) {
                                                 Icon(Icons.Default.Close, "delete the config")
                                             }
@@ -760,6 +861,7 @@ fun VodSettingsContent(
 
                     Text(
                         text = "需要配置点播源才能获取到视频内容\n" +
+                                "可一次粘贴多个 http 地址，或粘贴 TV 仓库索引链接（自动展开 urls 列表）\n" +
                                 " \n" +
                                 "格式：\n" +
                                 "file://C:\\\\json\\\\config.json \n" +
@@ -772,10 +874,170 @@ fun VodSettingsContent(
                 }
             }
         }
+        item {
+            SettingCard(title = "直播源配置", icon = Icons.Default.LiveTv) {
+                val liveSetting = derivedStateOf { model.value.settingList.getSetting(SettingType.LIVE) }
+                var liveUrl by remember { mutableStateOf(liveSetting.value?.value ?: "") }
+
+                LaunchedEffect(liveSetting.value?.value) {
+                    liveSetting.value?.value?.let {
+                        if (liveUrl != it) liveUrl = it
+                    }
+                }
+
+                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = liveUrl,
+                            onValueChange = {
+                                liveUrl = it
+                                SettingStore.setValue(SettingType.LIVE, it)
+                                vm.sync()
+                            },
+                            label = { Text("输入直播源地址（m3u/txt/json）") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            keyboardOptions = KeyboardOptions(
+                                imeAction = ImeAction.Done,
+                                keyboardType = KeyboardType.Uri
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        Button(
+                            onClick = { setLiveConfig(liveUrl) },
+                            modifier = Modifier.height(60.dp).padding(top = 8.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            )
+                        ) {
+                            Text("确定")
+                        }
+                    }
+                    Text(
+                        text = "支持 file:// 或 http(s)://，该地址将作为“自定义直播”在直播页展示。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                    val liveAcross = remember {
+                        mutableStateOf(SettingStore.getSettingItem(SettingType.LIVE_ACROSS).ifBlank { "true" }.toBoolean())
+                    }
+                    val liveAutoLine = remember {
+                        mutableStateOf(SettingStore.getSettingItem(SettingType.LIVE_AUTO_LINE).ifBlank { "true" }.toBoolean())
+                    }
+                    val liveInvert = remember {
+                        mutableStateOf(SettingStore.getSettingItem(SettingType.LIVE_INVERT).toBoolean())
+                    }
+                    RadioButtonRow(
+                        text = "跨分组换台",
+                        selected = liveAcross.value,
+                        onClick = {
+                            liveAcross.value = !liveAcross.value
+                            SettingStore.setValue(SettingType.LIVE_ACROSS, liveAcross.value.toString())
+                        }
+                    )
+                    RadioButtonRow(
+                        text = "播放失败自动换线路",
+                        selected = liveAutoLine.value,
+                        onClick = {
+                            liveAutoLine.value = !liveAutoLine.value
+                            SettingStore.setValue(SettingType.LIVE_AUTO_LINE, liveAutoLine.value.toString())
+                        }
+                    )
+                    RadioButtonRow(
+                        text = "换台方向反转",
+                        selected = liveInvert.value,
+                        onClick = {
+                            liveInvert.value = !liveInvert.value
+                            SettingStore.setValue(SettingType.LIVE_INVERT, liveInvert.value.toString())
+                        }
+                    )
+                }
+            }
+        }
+        item {
+            SettingCard(title = "下载配置 (aria2)", icon = Icons.Default.Download) {
+                val aria2Enabled = remember {
+                    mutableStateOf(SettingStore.getSettingItem(SettingType.ARIA2_ENABLED).toBoolean())
+                }
+                var aria2Rpc by remember {
+                    mutableStateOf(SettingStore.getSettingItem(SettingType.ARIA2_RPC).ifBlank { "http://127.0.0.1:6800/jsonrpc" })
+                }
+                var aria2Secret by remember {
+                    mutableStateOf(SettingStore.getSettingItem(SettingType.ARIA2_SECRET))
+                }
+                var aria2Dir by remember {
+                    mutableStateOf(SettingStore.getSettingItem(SettingType.ARIA2_DIR))
+                }
+                val aria2Scope = rememberCoroutineScope()
+
+                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    RadioButtonRow(
+                        text = "启用 aria2 下载",
+                        selected = aria2Enabled.value,
+                        onClick = {
+                            aria2Enabled.value = !aria2Enabled.value
+                            SettingStore.setValue(SettingType.ARIA2_ENABLED, aria2Enabled.value.toString())
+                        }
+                    )
+                    OutlinedTextField(
+                        value = aria2Rpc,
+                        onValueChange = {
+                            aria2Rpc = it
+                            SettingStore.setValue(SettingType.ARIA2_RPC, it)
+                        },
+                        label = { Text("RPC 地址") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                    )
+                    OutlinedTextField(
+                        value = aria2Secret,
+                        onValueChange = {
+                            aria2Secret = it
+                            SettingStore.setValue(SettingType.ARIA2_SECRET, it)
+                        },
+                        label = { Text("RPC 密钥（可选）") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                    )
+                    OutlinedTextField(
+                        value = aria2Dir,
+                        onValueChange = {
+                            aria2Dir = it
+                            SettingStore.setValue(SettingType.ARIA2_DIR, it)
+                        },
+                        label = { Text("下载目录（远程填 NAS 路径如 /volume1/downloads；留空用 aria2 默认）") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            aria2Scope.launch {
+                                com.corner.util.download.Aria2Client.getVersion()
+                                    .onSuccess { SnackBar.postMsg(it, type = SnackBar.MessageType.INFO) }
+                                    .onFailure { SnackBar.postMsg("连接失败: ${it.message}", type = SnackBar.MessageType.ERROR) }
+                            }
+                        },
+                        modifier = Modifier.align(Alignment.End),
+                    ) {
+                        Text("测试连接")
+                    }
+                    Text(
+                        text = "任意选集可点下载图标。磁力等走 aria2；m3u8 切片本机下载并用内置 ffmpeg 合并为 mp4。远程目录请填 NAS 路径。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
     }
 }
 
-// 单选按钮行组件
 @Composable
 fun RadioButtonRow(
     text: String,
@@ -1004,6 +1266,139 @@ fun PlayerSettingsContent(
                 }
             }
         }
+
+        item {
+            DanmakuSettingsCard(vm)
+        }
+    }
+}
+
+@Composable
+private fun DanmakuSettingsCard(vm: SettingViewModel) {
+    SettingCard(title = "弹幕设置", icon = Icons.AutoMirrored.Filled.Chat) {
+        val danmakuLoad = remember {
+            mutableStateOf(DanmakuSetting.isLoad())
+        }
+        val danmakuShow = remember {
+            mutableStateOf(DanmakuSetting.isShow())
+        }
+        val danmakuAuto = remember {
+            mutableStateOf(DanmakuSetting.isAuto())
+        }
+        val danmakuSpiderFirst = remember {
+            mutableStateOf(DanmakuSetting.isSpiderFirst())
+        }
+        var danmakuApiUrl by remember {
+            mutableStateOf(DanmakuSetting.getApiUrl())
+        }
+        var danmakuTextScale by remember {
+            mutableStateOf(DanmakuSetting.getTextScale().toString())
+        }
+        val hasApi = DanmakuSetting.effectiveApiUrl().isNotBlank()
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            RadioButtonRow("加载弹幕", danmakuLoad.value) {
+                danmakuLoad.value = !danmakuLoad.value
+                DanmakuSetting.setLoad(danmakuLoad.value)
+                vm.sync()
+            }
+            RadioButtonRow("显示弹幕", danmakuShow.value) {
+                danmakuShow.value = !danmakuShow.value
+                DanmakuSetting.setShow(danmakuShow.value)
+                vm.sync()
+            }
+            if (danmakuLoad.value) {
+                OutlinedTextField(
+                    value = danmakuApiUrl,
+                    onValueChange = {
+                        danmakuApiUrl = it
+                        DanmakuSetting.setApiUrl(it)
+                        vm.sync()
+                    },
+                    label = { Text("弹幕 API（留空则用配置 danmaku 字段）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                Text(
+                    text = if (hasApi || danmakuApiUrl.isNotBlank()) "API：已配置" else "API：未配置",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (hasApi || danmakuApiUrl.isNotBlank()) {
+                    RadioButtonRow("自动搜索弹幕", danmakuAuto.value) {
+                        danmakuAuto.value = !danmakuAuto.value
+                        DanmakuSetting.setAuto(danmakuAuto.value)
+                        vm.sync()
+                    }
+                    if (danmakuAuto.value) {
+                        RadioButtonRow("优先使用爬虫弹幕", danmakuSpiderFirst.value) {
+                            danmakuSpiderFirst.value = !danmakuSpiderFirst.value
+                            DanmakuSetting.setSpiderFirst(danmakuSpiderFirst.value)
+                            vm.sync()
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = danmakuTextScale,
+                    onValueChange = {
+                        danmakuTextScale = it
+                        it.toFloatOrNull()?.let { scale ->
+                            DanmakuSetting.setTextScale(scale.coerceIn(0.5f, 3f))
+                            vm.sync()
+                        }
+                    },
+                    label = { Text("字号倍率 (0.5 - 3.0)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+            }
+            Text(
+                text = "支持 XML/行文本弹幕；Web 遥控页可实时发送弹幕。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun RemoteControlSettingsCard() {
+    val device = remember { RemoteDeviceInfo.current() }
+    val localUrl = remember { "http://127.0.0.1:${KtorD.getPort()}/" }
+    val lanUrl = remember { "http://${NetworkUtil.getLanIp()}:${KtorD.getPort()}/" }
+
+    fun copyText(text: String) {
+        runCatching {
+            val clipboard = Toolkit.getDefaultToolkit().systemClipboard
+            clipboard.setContents(StringSelection(text), null)
+            SnackBar.postMsg("已复制: $text", type = SnackBar.MessageType.INFO)
+        }
+    }
+
+    SettingCard(title = "Web 遥控", icon = Icons.AutoMirrored.Filled.OpenInNew) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("设备: ${device.name}", style = MaterialTheme.typography.bodyMedium)
+            Text("UUID: ${device.uuid}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("本机访问", style = MaterialTheme.typography.labelMedium)
+                    Text(localUrl, style = MaterialTheme.typography.bodySmall)
+                }
+                TextButton(onClick = { copyText(localUrl) }) { Text("复制") }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("局域网访问", style = MaterialTheme.typography.labelMedium)
+                    Text(lanUrl, style = MaterialTheme.typography.bodySmall)
+                }
+                TextButton(onClick = { copyText(lanUrl) }) { Text("复制") }
+            }
+            Text(
+                "手机浏览器打开上述地址，可搜索、推送、发弹幕、浏览本地文件并遥控播放。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -1018,6 +1413,9 @@ fun NetworkSettingsContent(
         modifier = modifier.padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        item {
+            RemoteControlSettingsCard()
+        }
         item {
             SettingCard(
                 title = "更新检查",
@@ -1794,28 +2192,71 @@ fun SideButton(
         }, textAlign = TextAlign.Center, color = textColor)
 }
 
-fun setConfig(textFieldValue: String?) {
+fun setConfig(
+    textFieldValue: String?,
+    onFinished: ((activeUrl: String?, success: Boolean) -> Unit)? = null,
+) {
     showProgress()
     SiteViewModel.viewModelScope.launch {
-        if (textFieldValue == null || textFieldValue == "") {
-            SnackBar.postMsg("点播源地址不可为空", type = SnackBar.MessageType.ERROR)
+        var activeUrl: String? = null
+        var ok = false
+        try {
+            if (textFieldValue.isNullOrBlank()) {
+                SnackBar.postMsg("点播源地址不可为空", type = SnackBar.MessageType.ERROR)
+                return@launch
+            }
+            val urls = ConfigUrlParser.parse(textFieldValue)
+            if (urls.isEmpty()) {
+                SnackBar.postMsg("未识别到有效地址（需以 http:// 或 file:// 开头）", type = SnackBar.MessageType.ERROR)
+                return@launch
+            }
+
+            urls.forEach { url -> ConfigDepot.upsertConfig(url) }
+
+            activeUrl = urls.first()
+            SettingStore.setValue(SettingType.VOD, activeUrl)
+            ApiConfig.api.cfg = Db.Config.find(activeUrl, ConfigType.SITE.ordinal.toLong()).firstOrNull()
+
+            ok = initConfig(true)
+            if (ok) {
+                activeUrl = SettingStore.getSettingItem(SettingType.VOD).takeIf { it.isNotBlank() } ?: activeUrl
+                val msg = if (urls.size > 1) {
+                    "已添加 ${urls.size} 个点播源，当前使用: ${activeUrl!!.take(48)}"
+                } else {
+                    "点播源已更新"
+                }
+                SnackBar.postMsg(msg, type = SnackBar.MessageType.INFO)
+            }
+        } catch (e: Exception) {
+            SnackBar.postMsg("点播源更新失败: ${e.message}", type = SnackBar.MessageType.ERROR)
+        } finally {
+            onFinished?.invoke(activeUrl, ok)
+        }
+    }.invokeOnCompletion {
+        hideProgress()
+    }
+}
+
+fun setLiveConfig(textFieldValue: String?) {
+    showProgress()
+    SiteViewModel.viewModelScope.launch {
+        if (textFieldValue.isNullOrBlank()) {
+            SnackBar.postMsg("直播源地址不可为空", type = SnackBar.MessageType.ERROR)
             return@launch
         }
-        SettingStore.setValue(SettingType.VOD, textFieldValue)
-        val config = Db.Config.find(textFieldValue, ConfigType.SITE.ordinal.toLong()).firstOrNull()
+        SettingStore.setValue(SettingType.LIVE, textFieldValue)
+        val config = Db.Config.find(textFieldValue, ConfigType.LIVE.ordinal.toLong()).firstOrNull()
         if (config == null) {
             Db.Config.save(
                 Config(
-                    type = ConfigType.SITE.ordinal.toLong(),
+                    type = ConfigType.LIVE.ordinal.toLong(),
                     url = textFieldValue
                 )
             )
         } else {
             Db.Config.updateUrl(config.id, textFieldValue)
         }
-
-        ApiConfig.api.cfg = Db.Config.find(textFieldValue, ConfigType.SITE.ordinal.toLong()).firstOrNull()
-        initConfig(true)
+        SnackBar.postMsg("直播源已保存", type = SnackBar.MessageType.SUCCESS)
     }.invokeOnCompletion {
         hideProgress()
     }

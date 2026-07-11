@@ -15,3 +15,5 @@ data class Config(
     val home: String? = null,
     val parse: String? = null,
 )
+
+fun Config.displayName(): String = name?.takeIf { it.isNotBlank() } ?: url.orEmpty()

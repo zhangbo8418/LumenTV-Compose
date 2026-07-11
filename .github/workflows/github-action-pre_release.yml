@@ -70,9 +70,9 @@ jobs:
             *.deb
             *.zip
 
-  build-mac:
-    runs-on: macos-latest
-    needs: [ set-tag, build-updater ]
+  build-mac-arm64:
+    runs-on: macos-14
+    needs: [set-tag, build-updater]
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
@@ -83,21 +83,83 @@ jobs:
           distribution: 'temurin'
           java-version: 17
           cache: 'gradle'
-      - run: ls
-      - run: chmod +x ./gradlew && ./gradlew createReleaseDistributable
-      - run: ls
-      - name: compress
-        run: zip -q -r ./LumenTV-mac-${{ needs.set-tag.outputs.tag }}.zip ./composeApp/build/compose/binaries/main-release/app
-      - run: ls
+
+      - name: 🐍 Prepare bundled Python (macos-arm64)
+        run: |
+          chmod +x ./gradlew
+          ./gradlew prepareBundledPython -Plumen.python.platform=macos-arm64
+
+      - name: 🎬 Prepare bundled ffmpeg (macos-arm64)
+        run: ./gradlew prepareBundledFfmpeg -Plumen.ffmpeg.platform=macos-arm64
+
+      - name: 🏗️ Package macOS arm64
+        run: |
+          ./gradlew createReleaseDistributable packageReleaseDistributionForCurrentOS
+
+      - name: 📦 Compress artifacts
+        run: |
+          TAG="${{ needs.set-tag.outputs.tag }}"
+          zip -q -r "./LumenTV-mac-arm64-${TAG}.zip" ./composeApp/build/compose/binaries/main-release/app
+          # 兼容旧下载名
+          cp "./LumenTV-mac-arm64-${TAG}.zip" "./LumenTV-mac-${TAG}.zip"
+          mv ./composeApp/build/compose/binaries/main-release/dmg/*.dmg "./LumenTV-mac-arm64-${TAG}.dmg"
+          cp "./LumenTV-mac-arm64-${TAG}.dmg" "./LumenTV-mac-${TAG}.dmg"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: mac-file
+          name: mac-arm64-file
           path: |
-            *.dmg
-            *.zip
+            LumenTV-mac-arm64-*.dmg
+            LumenTV-mac-arm64-*.zip
+            LumenTV-mac-*.dmg
+            LumenTV-mac-*.zip
+
+  build-mac-amd64:
+    runs-on: macos-14
+    needs: [set-tag, build-updater]
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: ☕ Set up Java (x64 under Rosetta)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 17
+          architecture: x64
+          cache: 'gradle'
+
+      - name: 🐍 Prepare bundled Python (macos-x64)
+        run: |
+          chmod +x ./gradlew
+          # 用 x64 Python 解释器装依赖（Rosetta）
+          arch -x86_64 ./gradlew prepareBundledPython -Plumen.python.platform=macos-x64
+
+      - name: 🎬 Prepare bundled ffmpeg (macos-x64)
+        run: arch -x86_64 ./gradlew prepareBundledFfmpeg -Plumen.ffmpeg.platform=macos-x64
+
+      - name: 🏗️ Package macOS amd64
+        run: |
+          arch -x86_64 ./gradlew createReleaseDistributable packageReleaseDistributionForCurrentOS
+
+      - name: 📦 Compress artifacts
+        run: |
+          TAG="${{ needs.set-tag.outputs.tag }}"
+          zip -q -r "./LumenTV-mac-amd64-${TAG}.zip" ./composeApp/build/compose/binaries/main-release/app
+          if ls ./composeApp/build/compose/binaries/main-release/dmg/*.dmg >/dev/null 2>&1; then
+            mv ./composeApp/build/compose/binaries/main-release/dmg/*.dmg "./LumenTV-mac-amd64-${TAG}.dmg"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-amd64-file
+          path: |
+            LumenTV-mac-amd64-*.dmg
+            LumenTV-mac-amd64-*.zip
+
   release:
     runs-on: ubuntu-latest
-    needs: [ build-win, build-linux, build-mac, set-tag, build-updater ]
+    needs: [ build-win, build-linux, build-mac-arm64, build-mac-amd64, set-tag, build-updater ]
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
@@ -110,12 +172,11 @@ jobs:
           echo "📂 整理发布文件"
           mkdir -p ./release-files
           
-          # 复制应用程序包
           cp ./win-file/* ./release-files/ 2>/dev/null || true
           cp ./linux-file/* ./release-files/ 2>/dev/null || true
-          cp ./mac-file/* ./release-files/ 2>/dev/null || true
+          cp ./mac-arm64-file/* ./release-files/ 2>/dev/null || true
+          cp ./mac-amd64-file/* ./release-files/ 2>/dev/null || true
           
-          # 复制 updater 文件（artifact 名称已包含平台信息）
           find . -path "*/updater-linux-amd64/updater" -exec cp {} ./release-files/updater-linux-amd64 \;
           find . -path "*/updater-linux-arm64/updater" -exec cp {} ./release-files/updater-linux-arm64 \;
           find . -path "*/updater-windows-amd64/updater.exe" -exec cp {} ./release-files/updater-windows-amd64.exe \;
@@ -127,24 +188,48 @@ jobs:
 
       - name: 📝 Generate version.json
         run: |
-          echo "📝 生成版本信息文件"
           VERSION="${{ needs.set-tag.outputs.tag }}"
           REPO="${{ github.repository }}"
-          printf '{\n  "version": "%s",\n  "windows": {\n    "download_url": "https://github.com/%s/releases/download/%s/LumenTV-win-%s.zip",\n    "msi_url": "https://github.com/%s/releases/download/%s/LumenTV-win-%s.msi"\n  },\n  "linux": {\n    "download_url": "https://github.com/%s/releases/download/%s/LumenTV-linux-%s.zip",\n    "deb_url": "https://github.com/%s/releases/download/%s/LumenTV-linux-%s.deb"\n  },\n  "mac": {\n    "download_url": "https://github.com/%s/releases/download/%s/LumenTV-mac-%s.zip",\n    "dmg_url": "https://github.com/%s/releases/download/%s/LumenTV-mac-%s.dmg"\n  }\n}\n' \
-            "$VERSION" \
-            "$REPO" "$VERSION" "$VERSION" \
-            "$REPO" "$VERSION" "$VERSION" \
-            "$REPO" "$VERSION" "$VERSION" \
-            "$REPO" "$VERSION" "$VERSION" \
-            "$REPO" "$VERSION" "$VERSION" \
-            "$REPO" "$VERSION" "$VERSION" \
-            > ./release-files/version.json
+          python3 <<'PY'
+          import json, os
+          version = os.environ["VERSION"]
+          repo = os.environ["REPO"]
+          base = f"https://github.com/{repo}/releases/download/{version}"
+          data = {
+            "version": version,
+            "windows": {
+              "download_url": f"{base}/LumenTV-win-{version}.zip",
+              "msi_url": f"{base}/LumenTV-win-{version}.msi",
+            },
+            "linux": {
+              "download_url": f"{base}/LumenTV-linux-{version}.zip",
+              "deb_url": f"{base}/LumenTV-linux-{version}.deb",
+            },
+            "mac": {
+              "download_url": f"{base}/LumenTV-mac-arm64-{version}.zip",
+              "dmg_url": f"{base}/LumenTV-mac-arm64-{version}.dmg",
+            },
+            "mac_arm64": {
+              "download_url": f"{base}/LumenTV-mac-arm64-{version}.zip",
+              "dmg_url": f"{base}/LumenTV-mac-arm64-{version}.dmg",
+            },
+            "mac_amd64": {
+              "download_url": f"{base}/LumenTV-mac-amd64-{version}.zip",
+              "dmg_url": f"{base}/LumenTV-mac-amd64-{version}.dmg",
+            },
+          }
+          open("./release-files/version.json", "w").write(json.dumps(data, indent=2) + "\n")
+          PY
+        env:
+          VERSION: ${{ needs.set-tag.outputs.tag }}
+          REPO: ${{ github.repository }}
 
       - name: 📖 Extract changelog for current version
         id: changelog
         run: |
           echo "📖 从 CHANGELOG.md 提取 ${{ needs.set-tag.outputs.tag }} 的更新日志"
           
+          # 去除版本号前缀的 'v' (CHANGELOG 中使用 v1.1.6 格式)
           VERSION_WITH_V="${{ needs.set-tag.outputs.tag }}"
           
           # 使用 awk 提取对应版本的更新日志
@@ -170,11 +255,12 @@ jobs:
             echo "⚠️ 未找到 $VERSION_WITH_V 的更新日志，使用默认文本"
             CHANGELOG=$(printf -- "- 发布新版本 %s\n- 详细更新内容请查看 CHANGELOG.md" "$VERSION_WITH_V")
           fi
-  
+          
           echo "✅ 提取到的更新日志:"
           echo "$CHANGELOG"
           
-          # 将多行内容保存到环境变量
+          # 将多行内容保存到环境变量（使用 GitHub Actions 的多行语法）
+          # 注意：需要对内容进行转义，避免 YAML 解析错误
           echo "changelog<<CHANGELOG_EOF" >> $GITHUB_OUTPUT
           echo "$CHANGELOG" >> $GITHUB_OUTPUT
           echo "CHANGELOG_EOF" >> $GITHUB_OUTPUT
@@ -197,9 +283,10 @@ jobs:
             ---
             
             ### 📦 包含文件
-            - **Windows**: MSI 安装包和 ZIP 压缩包
-            - **Linux**: DEB 包和 ZIP 压缩包  
-            - **macOS**: DMG 镜像和 ZIP 压缩包
+            - **Windows**: MSI 安装包和 ZIP 压缩包（内置 Python）
+            - **Linux**: DEB 包和 ZIP 压缩包（内置 Python）
+            - **macOS arm64**: DMG / ZIP（Apple Silicon，内置 Python）
+            - **macOS amd64**: DMG / ZIP（Intel，内置 Python）
             - **Updater**: 各平台独立的更新器组件
             - **version.json**: 版本信息文件
             
@@ -209,7 +296,8 @@ jobs:
             |------|--------|--------|
             | Windows | [MSI](https://github.com/${{ github.repository }}/releases/download/${{ needs.set-tag.outputs.tag }}/LumenTV-win-${{ needs.set-tag.outputs.tag }}.msi) | [ZIP](https://github.com/${{ github.repository }}/releases/download/${{ needs.set-tag.outputs.tag }}/LumenTV-win-${{ needs.set-tag.outputs.tag }}.zip) |
             | Linux | [DEB](https://github.com/${{ github.repository }}/releases/download/${{ needs.set-tag.outputs.tag }}/LumenTV-linux-${{ needs.set-tag.outputs.tag }}.deb) | [ZIP](https://github.com/${{ github.repository }}/releases/download/${{ needs.set-tag.outputs.tag }}/LumenTV-linux-${{ needs.set-tag.outputs.tag }}.zip) |
-            | macOS | [DMG](https://github.com/${{ github.repository }}/releases/download/${{ needs.set-tag.outputs.tag }}/LumenTV-mac-${{ needs.set-tag.outputs.tag }}.dmg) | [ZIP](https://github.com/${{ github.repository }}/releases/download/${{ needs.set-tag.outputs.tag }}/LumenTV-mac-${{ needs.set-tag.outputs.tag }}.zip) |
+            | macOS arm64 | [DMG](https://github.com/${{ github.repository }}/releases/download/${{ needs.set-tag.outputs.tag }}/LumenTV-mac-arm64-${{ needs.set-tag.outputs.tag }}.dmg) | [ZIP](https://github.com/${{ github.repository }}/releases/download/${{ needs.set-tag.outputs.tag }}/LumenTV-mac-arm64-${{ needs.set-tag.outputs.tag }}.zip) |
+            | macOS amd64 | [DMG](https://github.com/${{ github.repository }}/releases/download/${{ needs.set-tag.outputs.tag }}/LumenTV-mac-amd64-${{ needs.set-tag.outputs.tag }}.dmg) | [ZIP](https://github.com/${{ github.repository }}/releases/download/${{ needs.set-tag.outputs.tag }}/LumenTV-mac-amd64-${{ needs.set-tag.outputs.tag }}.zip) |
             
             > 💡 提示：完整的历史更新记录请查看 [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
           draft: false

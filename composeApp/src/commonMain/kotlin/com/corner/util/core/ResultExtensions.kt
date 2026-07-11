@@ -2,6 +2,9 @@ package com.corner.util.core
 
 import com.corner.catvodcore.bean.Result
 import com.corner.catvodcore.bean.isEmpty
+import com.corner.catvodcore.bean.v
+import com.corner.catvodcore.config.ApiConfig
+import com.corner.catvodcore.config.ParseConfig
 
 /**
  * 检查播放结果是否为空（URL 为空）
@@ -9,6 +12,24 @@ import com.corner.catvodcore.bean.isEmpty
 fun Result.playResultIsEmpty(): Boolean {
     return url.isEmpty()
 }
+
+/**
+ * 是否需要解析（与 TV Result.needParse 一致）
+ */
+fun Result.needParse(): Boolean = parse == 1 || jx == 1
+
+/**
+ * 是否使用全局解析器（与 TV Result.isUseParse 一致）
+ */
+fun Result.isUseParse(): Boolean {
+    if (!ParseConfig.hasParse()) return false
+    return (playUrl.isNullOrBlank() && flag != null && ApiConfig.api.flags.contains(flag)) || jx == 1
+}
+
+/**
+ * 播放地址拼接（playUrl 前缀 + url）
+ */
+fun Result.realUrl(): String = playUrl.orEmpty() + url.v()
 
 /**
  * 检查详情结果是否为空

@@ -14,17 +14,13 @@ import java.math.BigInteger
 import java.net.URI
 import java.security.MessageDigest
 import java.util.*
+import com.corner.util.download.DownloadUrlResolver
 
 private var log = LoggerFactory.getLogger("Utils")
 
 object Utils {
 
-    private val prefix = listOf("magnet")
-
-    fun isDownloadLink(str: String): Boolean {
-        prefix.forEach { if (str.startsWith(it)) return true }
-        return false
-    }
+    fun isDownloadLink(str: String): Boolean = DownloadUrlResolver.isDownloadLink(str)
 
     fun substring(text: String?): String? {
         return substring(text, 1)

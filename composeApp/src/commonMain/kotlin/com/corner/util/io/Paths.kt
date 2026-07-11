@@ -22,7 +22,7 @@ object Paths {
         }
     }
 
-    private fun File.check():File{
+    private fun File.check(): File {
         if (!exists()) {
             mkdirs()
         }
@@ -67,6 +67,10 @@ object Paths {
         return File(jar(), com.corner.util.net.Utils.md5(fileName) + ".jar")
     }
 
+    fun py(): File {
+        return cache("py").check()
+    }
+
     fun write(path:File, bytes: ByteArray?):File{
         if(bytes == null || bytes.isEmpty()){
             return path
@@ -100,5 +104,24 @@ object Paths {
 
     fun playwrightTemp(): File {
         return userDataRoot().resolve("temp").check()
+    }
+
+    fun epg(name: String): File {
+        return cache("epg").check().resolve(name)
+    }
+
+    fun download(): File {
+        val home = System.getProperty("user.home")
+        val dir = when (SysVerUtil.currentOs) {
+            OperatingSystem.Windows -> File(System.getenv("USERPROFILE") ?: home, "Downloads")
+            OperatingSystem.MacOS -> File(home, "Downloads")
+            OperatingSystem.Linux -> File(home, "Downloads")
+            OperatingSystem.Unknown -> userDataRoot().resolve("downloads")
+        }
+        return dir.check()
+    }
+
+    fun wall(): File {
+        return cache("wall").check().resolve("wall.bin")
     }
 }

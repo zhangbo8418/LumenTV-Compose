@@ -191,6 +191,18 @@ object OkHttp {
     }
 
     @JvmStatic
+    fun client(redirect: Boolean, timeout: Long): OkHttpClient {
+        return builder
+            .followRedirects(redirect)
+            .followSslRedirects(redirect)
+            .callTimeout(timeout, TimeUnit.MILLISECONDS)
+            .connectTimeout(timeout, TimeUnit.MILLISECONDS)
+            .readTimeout(timeout, TimeUnit.MILLISECONDS)
+            .writeTimeout(timeout, TimeUnit.MILLISECONDS)
+            .build()
+    }
+
+    @JvmStatic
     val builder: OkHttpClient.Builder
         get() = OkHttpClient.Builder()
             .addInterceptor(deflateInterceptor)

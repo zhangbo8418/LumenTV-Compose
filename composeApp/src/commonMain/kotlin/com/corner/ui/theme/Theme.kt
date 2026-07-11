@@ -1,10 +1,13 @@
 package com.corner.ui.theme
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
 import com.corner.catvodcore.viewmodel.GlobalAppState
 
@@ -78,8 +81,16 @@ private val DarkColors = darkColorScheme(
 fun AppTheme(
     content: @Composable () -> Unit
 ) {
-    val isDarkThemeState = GlobalAppState.isDarkTheme.collectAsState()
-    val isDarkTheme = isDarkThemeState.value
+    val preference by GlobalAppState.themePreference.collectAsState()
+    val systemDark = isSystemInDarkTheme()
+    val isDarkTheme = when (preference) {
+        "dark" -> true
+        "light" -> false
+        else -> systemDark
+    }
+    LaunchedEffect(isDarkTheme) {
+        GlobalAppState.isDarkTheme.value = isDarkTheme
+    }
     val colors = if (!isDarkTheme) {
         LightColors
     } else {
@@ -127,8 +138,14 @@ val PlayerDarkColors = darkColorScheme(
 
 @Composable
 fun PlayerControlsTheme(content: @Composable () -> Unit) {
-    val isDarkTheme = GlobalAppState.isDarkTheme.collectAsState()
-    if (isDarkTheme.value){
+    val preference by GlobalAppState.themePreference.collectAsState()
+    val systemDark = isSystemInDarkTheme()
+    val isDarkTheme = when (preference) {
+        "dark" -> true
+        "light" -> false
+        else -> systemDark
+    }
+    if (isDarkTheme){
         MaterialTheme(
             colorScheme = PlayerDarkColors,
             content = content

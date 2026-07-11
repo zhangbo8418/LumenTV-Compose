@@ -27,6 +27,10 @@ class PlayerLifecycleManager(
             try {
                 log.debug("播放器状态转换: {} -> {}", _lifecycleState.value, newState)
 
+                if (_lifecycleState.value == newState) {
+                    return@withContext Result.success(Unit)
+                }
+
                 // 状态验证
                 if (!isValidTransition(_lifecycleState.value, newState)) {
                     log.warn("无效的状态转换: ${_lifecycleState.value} -> $newState")
@@ -126,6 +130,33 @@ class PlayerLifecycleManager(
     }
 
     suspend fun ended(): Result<Unit> = transitionTo(PlayerLifecycleState.Ended)
+
+    /**
+     * 切换线路/源时强制停止当前播放，绕过严格状态机限制。
+     */
+    suspend fun stopForSourceSwitch(): Result<Unit> {
+        return withContext(lifecycleDispatcher) {
+            try {
+                log.debug("切换源：强制停止当前播放，当前状态={}", _lifecycleState.value)
+                controller.stopAsync()
+                when (_lifecycleState.value) {
+                    PlayerLifecycleState.Playing,
+                    PlayerLifecycleState.Paused,
+                    PlayerLifecycleState.Loading,
+                    PlayerLifecycleState.Ready -> {
+                        _lifecycleState.value = PlayerLifecycleState.Ended
+                    }
+                    else -> Unit
+                }
+                Result.success(Unit)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.warn("切换源停止播放异常: {}", e.message)
+                Result.success(Unit)
+            }
+        }
+    }
     
     /**
      * 停止播放媒体
@@ -320,6 +351,7 @@ class PlayerLifecycleManager(
             PlayerLifecycleState.Ready -> to in listOf(
                 PlayerLifecycleState.Playing,
                 PlayerLifecycleState.Paused,
+                PlayerLifecycleState.Ended,
                 PlayerLifecycleState.Released
             )
 
@@ -337,6 +369,7 @@ class PlayerLifecycleManager(
 
             PlayerLifecycleState.Ended -> to in listOf(
                 PlayerLifecycleState.Ready,
+                PlayerLifecycleState.Ended,
                 PlayerLifecycleState.Released
             )
 

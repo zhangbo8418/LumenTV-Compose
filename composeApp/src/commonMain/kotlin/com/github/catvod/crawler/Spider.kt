@@ -4,7 +4,10 @@ import com.corner.util.net.Http
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 
-open class Spider{
+open class Spider {
+    @JvmField
+    var siteKey: String? = null
+
     open fun init() {
     }
 
@@ -45,6 +48,10 @@ open class Spider{
         return "{}"
     }
 
+    open fun liveContent(url: String?): String {
+        return ""
+    }
+
     open fun manualVideoCheck(): Boolean {
         return false
     }
@@ -53,7 +60,17 @@ open class Spider{
         return false
     }
 
+    @JvmOverloads
+    open fun proxy(params: Map<String, String>?): Array<Any>? {
+        val mapped: Map<String?, String?>? = params?.entries?.associate { it.key to it.value }
+        return proxyLocal(mapped)
+    }
+
     open fun proxyLocal(params: Map<String?, String?>?): Array<Any>? {
+        return null
+    }
+
+    open fun action(action: String?): String? {
         return null
     }
 
@@ -63,6 +80,7 @@ open class Spider{
     companion object {
         @JvmField
         val dns: Dns = Http.dns()
+
         @JvmStatic
         fun safeDns(): Dns {
             return Http.dns()

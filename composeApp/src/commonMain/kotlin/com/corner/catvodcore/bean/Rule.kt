@@ -6,5 +6,11 @@ import kotlinx.serialization.Serializable
 data class Rule(
     var name: String,
     var hosts: List<String>,
-    var regex: List<String>? = null
-)
+    var regex: List<String>? = null,
+    var script: List<String>? = null,
+    var exclude: List<String>? = null,
+) {
+    companion object {
+        fun empty(): Rule = Rule(name = "", hosts = emptyList())
+    }
+}

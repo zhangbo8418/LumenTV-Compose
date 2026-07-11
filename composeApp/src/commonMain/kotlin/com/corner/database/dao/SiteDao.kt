@@ -32,16 +32,15 @@ interface SiteDao{
 
     suspend fun update(cfg:Config, api: Api): MutableSet<com.corner.catvodcore.bean.Site> {
         val sites = api.sites
-        val siteList = findByConfigId(cfg.id).firstOrNull()
-        if(siteList.isNullOrEmpty() && api.sites.isNotEmpty()){
+        val siteList = findByConfigId(cfg.id).firstOrNull().orEmpty()
+        if (siteList.isEmpty() && sites.isNotEmpty()) {
             save(api.sites.map { it.toDbSite(configId = cfg.id) })
-        }else{
+        } else if (siteList.isNotEmpty() && sites.isNotEmpty()) {
             for (site in sites) {
-                val filter = siteList!!.firstOrNull { it.key == site.key }
-                filter?.apply {
-                    site.searchable = searchable?.toInt()
-                    site.changeable = changeable?.toInt()
-                    site.id = id
+                siteList.firstOrNull { it.key == site.key }?.let { filter ->
+                    site.searchable = filter.searchable?.toInt()
+                    site.changeable = filter.changeable?.toInt()
+                    site.id = filter.id
                 }
             }
         }

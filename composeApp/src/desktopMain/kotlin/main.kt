@@ -27,6 +27,7 @@ import com.corner.util.update.fetchChangelogFromUrl
 import com.seiko.imageloader.LocalImageLoader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import lumentv_compose.composeapp.generated.resources.LumenTV_icon_png
 import org.jetbrains.compose.resources.painterResource
 import org.slf4j.LoggerFactory
@@ -59,22 +60,30 @@ fun main() {
         var isLoadingChangelog by remember { mutableStateOf(false) }
 
         LaunchedEffect(Unit) {
-            launch(Dispatchers.Default) {
-                Init.start()
-            }
-            launch(Dispatchers.IO) {
-                val result = UpdateManager.checkForUpdate()
-                if (result is UpdateResult.Available) {
-                    updateResult = result
-                    isLoadingChangelog = true
-                    changelog = try {
-                        fetchChangelogFromUrl(CHANGE_LOG_URL)
-                    } catch (e: Exception) {
-                        "无法获取更新日志: ${e.message}"
-                    } finally {
-                        isLoadingChangelog = false
+            supervisorScope {
+                launch(Dispatchers.Default) {
+                    runCatching { Init.start() }.onFailure {
+                        log.error("应用初始化失败", it)
                     }
-                    showUpdateDialog = true
+                }
+                launch(Dispatchers.IO) {
+                    runCatching {
+                        when (val result = UpdateManager.checkForUpdate()) {
+                            is UpdateResult.Available -> {
+                                updateResult = result
+                                isLoadingChangelog = true
+                                changelog = fetchChangelogFromUrl(CHANGE_LOG_URL)
+                                isLoadingChangelog = false
+                                showUpdateDialog = true
+                            }
+                            is UpdateResult.Error -> {
+                                log.warn("启动时检查更新失败: {}", result.message)
+                            }
+                            UpdateResult.NoUpdate -> Unit
+                        }
+                    }.onFailure {
+                        log.warn("启动时检查更新异常: {}", it.message)
+                    }
                 }
             }
         }
@@ -87,6 +96,7 @@ fun main() {
             undecorated = true,
             transparent = false,
         ) {
+            GlobalAppState.prepareWindowForFullscreen(window)
             window.minimumSize = Dimension(800, 600)
             CompositionLocalProvider(
                 LocalImageLoader provides remember { generateImageLoader() },
@@ -130,36 +140,57 @@ fun main() {
                     },
                     onUpdate = {
                         scope.launch(Dispatchers.IO) {
-                            log.info("Starting update process")
-                            val tempDir = System.getProperty("java.io.tmpdir")
-                            val zipFile = File(tempDir, "LumenTV-update.zip")
+                            try {
+                                log.info("Starting update process")
+                                val tempDir = System.getProperty("java.io.tmpdir")
+                                val zipFile = File(tempDir, "LumenTV-update.zip")
 
-                            if (zipFile.exists()) {
-                                log.info("Update file already exists, launching updater directly")
-                                scope.launch {
-                                    UpdateLauncher.launchUpdater(zipFile, updateResult!!.updaterUrl)
-                                    UpdateLauncher.exitApplication()
-                                }
-                                return@launch
-                            }
-
-                            log.info("Starting download using downloadUpdate function")
-                            UpdateDownloader.downloadUpdate(
-                                updateResult!!.downloadUrl,
-                                zipFile
-                            ).collect { progress ->
-                                log.info("Received progress update: ${progress::class.simpleName}")
-                                downloadProgress = progress
-                                if (progress is DownloadProgress.Completed) {
-                                    log.info("Download completed, launching updater")
-                                    scope.launch {
-                                        UpdateLauncher.launchUpdater(zipFile, updateResult!!.updaterUrl)
-                                        UpdateLauncher.exitApplication()
+                                suspend fun launchIfReady(): Boolean {
+                                    if (!zipFile.exists() || zipFile.length() <= 0L) {
+                                        SnackBar.postMsg("更新包不存在或已损坏", type = SnackBar.MessageType.ERROR)
+                                        return false
                                     }
-                                } else if (progress is DownloadProgress.Failed) {
-                                    log.error("下载更新失败: {}", progress.error)
+                                    val launched = UpdateLauncher.launchUpdater(zipFile, updateResult!!.updaterUrl)
+                                    if (launched) {
+                                        UpdateLauncher.exitApplication()
+                                    } else {
+                                        SnackBar.postMsg(
+                                            "更新程序启动失败，请检查网络后重试",
+                                            type = SnackBar.MessageType.ERROR,
+                                        )
+                                    }
+                                    return launched
                                 }
-                                log.info("Finished collecting download progress")
+
+                                if (zipFile.exists() && zipFile.length() > 0L) {
+                                    log.info("Update file already exists, launching updater directly")
+                                    launchIfReady()
+                                    return@launch
+                                }
+
+                                UpdateDownloader.downloadUpdate(
+                                    updateResult!!.downloadUrl,
+                                    zipFile,
+                                ).collect { progress ->
+                                    downloadProgress = progress
+                                    when (progress) {
+                                        is DownloadProgress.Completed -> launchIfReady()
+                                        is DownloadProgress.Failed -> {
+                                            log.error("下载更新失败: {}", progress.error)
+                                            SnackBar.postMsg(
+                                                "下载更新失败: ${progress.error}",
+                                                type = SnackBar.MessageType.ERROR,
+                                            )
+                                        }
+                                        else -> Unit
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                log.error("更新流程异常", e)
+                                SnackBar.postMsg(
+                                    "更新失败: ${e.message}",
+                                    type = SnackBar.MessageType.ERROR,
+                                )
                             }
                         }
                     }

@@ -25,11 +25,11 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.unit.dp
 import com.corner.ui.player.PlayState
-import com.corner.ui.player.vlcj.VlcjFrameController
+import com.corner.ui.player.frame.FramePlayerController
 import com.corner.ui.scene.emptyShow
 import kotlin.math.roundToInt
 
@@ -37,7 +37,7 @@ import kotlin.math.roundToInt
 @Composable
 fun FrameContainer(
     modifier: Modifier = Modifier,
-    controller: VlcjFrameController,
+    controller: FramePlayerController,
     onClick: () -> Unit
 ) {
     val playerState = controller.state.collectAsState()
@@ -94,21 +94,12 @@ fun FrameContainer(
                     )
                 }
             }
-            when (playerState.value.state) {
-                PlayState.BUFFERING -> {
-                    if (bitmap != null) {
-                        ProgressIndicator(
-                            Modifier.align(Alignment.Center),
-                            progression = playerState.value.bufferProgression
-                        )
-                    } else {
-                        ProgressIndicator(
-                            Modifier.align(Alignment.Center)
-                        )
-                    }
-                }
+            val trafficSpeed = playerState.value.trafficSpeed
+            val showBufferOverlay = playerState.value.state == PlayState.BUFFERING ||
+                (trafficSpeed.isNotBlank() && bitmap == null)
 
-                PlayState.ERROR -> {
+            when {
+                playerState.value.state == PlayState.ERROR -> {
                     Column(
                         modifier = Modifier.align(Alignment.Center),
                         verticalArrangement = Arrangement.spacedBy(5.dp),
@@ -123,23 +114,28 @@ fun FrameContainer(
                     }
                 }
 
-                else -> {
-                    if (bitmap == null) {
-                        if (!isControllerReady) {
-                            // 播放器未就绪时显示加载提示
-                            ProgressIndicator(
-                                modifier = Modifier.align(Alignment.Center),
-                                text = "播放器正在加载"
-                            )
-                        } else {
-                            // 播放器就绪但无内容时显示空状态
-                            emptyShow(
-                                modifier = Modifier.align(Alignment.Center),
-                                title = "未加载到视频",
-                                subtitle = "请检查网络连接",
-                                showRefresh = false
-                            )
-                        }
+                showBufferOverlay -> {
+                    ProgressIndicator(
+                        Modifier.align(Alignment.Center),
+                        progression = playerState.value.bufferProgression,
+                        trafficSpeed = trafficSpeed,
+                    )
+                }
+
+                bitmap == null -> {
+                    if (!isControllerReady) {
+                        ProgressIndicator(
+                            modifier = Modifier.align(Alignment.Center),
+                            text = "播放器正在加载",
+                            trafficSpeed = trafficSpeed,
+                        )
+                    } else {
+                        emptyShow(
+                            modifier = Modifier.align(Alignment.Center),
+                            title = "未加载到视频",
+                            subtitle = "请检查网络连接",
+                            showRefresh = false
+                        )
                     }
                 }
             }
@@ -148,26 +144,35 @@ fun FrameContainer(
 }
 
 @Composable
-fun ProgressIndicator(modifier: Modifier, text: String = "加载中...", progression: Float = -1f) {
+fun ProgressIndicator(
+    modifier: Modifier,
+    text: String = "加载中...",
+    progression: Float = -1f,
+    trafficSpeed: String = "",
+) {
     Column(
         modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (progression != -1f) {
-            CircularProgressIndicator(
-                progress = { progression / 100 },
-            )
-        } else {
-            CircularProgressIndicator()
+        CircularProgressIndicator()
+        // 对齐 TV：网速为主文案；没有速度时再显示百分比/加载中
+        val label = when {
+            trafficSpeed.isNotBlank() -> trafficSpeed
+            progression in 0f..99.9f -> "%.0f%%".format(progression)
+            else -> text
         }
         Text(
-            if (progression != -1f) "%.2f".format(progression) + "%" else text, style = TextStyle(
-                color = MaterialTheme.colorScheme.primary, shadow = Shadow(
+            label,
+            style = TextStyle(
+                color = Color.White,
+                shadow = Shadow(
                     color = Color.Black,
-                    offset = Offset(8f, 8f),
-                    blurRadius = 8f
+                    offset = Offset(2f, 2f),
+                    blurRadius = 6f
                 ),
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                fontSize = MaterialTheme.typography.titleMedium.fontSize,
             )
         )
     }

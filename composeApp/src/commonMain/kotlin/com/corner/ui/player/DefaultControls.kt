@@ -19,8 +19,10 @@ import androidx.compose.material.icons.automirrored.rounded.VolumeDown
 import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.ButtonDefaults
@@ -49,7 +51,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.*
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
+import com.corner.catvodcore.bean.Parse
 import com.corner.catvodcore.bean.Vod
+import com.corner.catvodcore.config.ParseConfig
+import com.corner.server.PlaybackMediaState
+import com.corner.ui.dlna.CastDialog
 import com.corner.util.net.Utils
 import com.corner.catvodcore.viewmodel.GlobalAppState
 import com.corner.ui.player.vlcj.VlcjFrameController
@@ -65,7 +71,10 @@ fun DefaultControls(
     modifier: Modifier = Modifier,
     controller: VlcjFrameController,
     vod: Vod,
-    onClickChooseEp: () -> Unit
+    onClickChooseEp: () -> Unit,
+    /** 仅当前集需要全局解析时为 true（对齐 TV renderUseParse） */
+    showParse: Boolean = false,
+    onSelectParse: ((Parse) -> Unit)? = null,
 ) {
     val playerState by controller.state.collectAsState()
     val interactionSource = remember { MutableInteractionSource() }
@@ -82,6 +91,10 @@ fun DefaultControls(
     val animatedTimestamp by animateFloatAsState(playerState.timestamp.toFloat())
     val isFullScreen = GlobalAppState.videoFullScreen.collectAsState()
     var showAspectRatioDropdown by remember { mutableStateOf(false) }
+    var showParseDropdown by remember { mutableStateOf(false) }
+    var showCastDialog by remember { mutableStateOf(false) }
+    val playHistory by controller.history.collectAsState()
+    val canShowParse = showParse && onSelectParse != null && ParseConfig.hasParse()
     val aspectRatios = listOf(
         "" to "原始比例",
         "16:9" to "16:9",
@@ -298,6 +311,13 @@ fun DefaultControls(
                                 it
                             )
                         }
+                        IconButton(onClick = { showCastDialog = true }) {
+                            Icon(
+                                Icons.Default.Cast,
+                                contentDescription = "DLNA投屏",
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
                         IconButton({ controller.toggleFullscreen() }) {
                             Icon(
                                 Icons.Default.Fullscreen,
@@ -305,16 +325,55 @@ fun DefaultControls(
                                 tint = MaterialTheme.colorScheme.primary
                             )
                         }
-                        // 仅在全屏状态下显示选集按钮
+                        // 仅在全屏状态下显示选集/解析按钮
                         AnimatedVisibility(visible = isFullScreen.value) {
-                            TextButtonTransparent("选集") {
-                                onClickChooseEp()
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                if (canShowParse) {
+                                    Box {
+                                        TextButtonTransparent("解析") { showParseDropdown = true }
+                                        PlayerControlsTheme {
+                                            DropdownMenu(
+                                                expanded = showParseDropdown,
+                                                onDismissRequest = { showParseDropdown = false },
+                                                containerColor = MaterialTheme.colorScheme.surface,
+                                                tonalElevation = 3.dp,
+                                            ) {
+                                                ParseConfig.getParses().forEach { parse ->
+                                                    DropdownMenuItem(
+                                                        text = {
+                                                            Text(
+                                                                "${parse.name}（${ParseConfig.typeLabel(parse.type)}）",
+                                                                color = MaterialTheme.colorScheme.onSurface,
+                                                            )
+                                                        },
+                                                        onClick = {
+                                                            showParseDropdown = false
+                                                            onSelectParse?.invoke(parse)
+                                                        },
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                TextButtonTransparent("选集") {
+                                    onClickChooseEp()
+                                }
                             }
                         }
                     }
                 }
             }
         }
+        CastDialog(
+            show = showCastDialog,
+            title = vod.vodName.orEmpty(),
+            url = playerState.mediaInfo?.url?.takeIf { it.isNotBlank() } ?: PlaybackMediaState.url,
+            position = playerState.timestamp,
+            history = playHistory,
+            onClose = { showCastDialog = false },
+            onCastSuccess = { controller.pause() },
+        )
     }
 }
 

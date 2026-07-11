@@ -17,7 +17,6 @@ import uk.co.caprica.vlcj.player.embedded.videosurface.callback.BufferFormatCall
 import uk.co.caprica.vlcj.player.embedded.videosurface.callback.RenderCallback
 import uk.co.caprica.vlcj.player.embedded.videosurface.callback.format.RV32BufferFormat
 import java.nio.ByteBuffer
-import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.math.roundToInt
 
 /**
@@ -45,10 +44,15 @@ class VlcjFrameRenderer(
     
     // 当前和待释放的 Bitmap
     private var currentBitmap: Bitmap? = null
-    private val pendingRelease = ConcurrentLinkedQueue<Bitmap>()
+    /** Compose 可能仍在画这些帧，必须延迟回收，否则 Skiko RasterFromBitmap SIGSEGV */
+    private val inFlightBitmaps = ArrayDeque<Bitmap>()
+    private val maxInFlight = 6
     
     @Volatile
     private var isReleased = false
+
+    @Volatile
+    private var renderEnabled = true
     
     /**
      * 检查渲染器是否已释放
@@ -125,40 +129,38 @@ class VlcjFrameRenderer(
                     displayWidth: Int,
                     displayHeight: Int
                 ) {
-                    // 增加状态检查
-                    if (isReleased) return
-                    
-                    val width = bufferFormat.width
-                    val height = bufferFormat.height
-                    val byteBuffer = nativeBuffers[0]
-                    
-                    // 增加缓冲区有效性检查
-                    if (byteBuffer.limit() <= 0) return
-                    
                     try {
-                        byteBuffer.get(byteArray)
-                        byteBuffer.rewind()
-                        
-                        // 从池中获取 Bitmap（复用或新建）
-                        val bmp = bitmapPool.acquire(width, height)
-                        bmp.installPixels(byteArray)
-                        
-                        // 将旧 Bitmap 加入待释放队列
-                        currentBitmap?.let {
-                            pendingRelease.add(it)
+                        synchronized(this@VlcjFrameRenderer) {
+                            if (isReleased || !renderEnabled) return
+
+                            val width = bufferFormat.width
+                            val height = bufferFormat.height
+                            val byteBuffer = nativeBuffers[0]
+                            val pixels = byteArray
+
+                            if (byteBuffer.limit() <= 0 || pixels == null) return
+
+                            byteBuffer.get(pixels)
+                            byteBuffer.rewind()
+
+                            val bmp = bitmapPool.acquire(width, height)
+                            bmp.installPixels(pixels)
+
+                            currentBitmap?.let { old ->
+                                inFlightBitmaps.addLast(old)
+                                drainInFlight(keep = maxInFlight)
+                            }
+
+                            currentBitmap = bmp
+                            if (!bmp.isClosed) {
+                                imageBitmapState.value = bmp.asComposeImageBitmap()
+                            }
                         }
-                        
-                        // 释放待回收的 Bitmap
-                        releasePendingBitmaps()
-                        
-                        // 更新当前 Bitmap 和 UI 状态
-                        currentBitmap = bmp
-                        imageBitmapState.value = bmp.asComposeImageBitmap()
                     } catch (e: Exception) {
                         log.error("渲染帧时发生错误", e)
-                        // 确保在出错时清理资源
-                        currentBitmap?.let {
-                            if (!it.isClosed) it.close()
+                        synchronized(this@VlcjFrameRenderer) {
+                            // 出错时不要立刻 close：Compose 可能仍持有引用
+                            imageBitmapState.value = null
                             currentBitmap = null
                         }
                     }
@@ -173,38 +175,49 @@ class VlcjFrameRenderer(
         )
     }
     
-    /**
-     * 释放待回收的 Bitmap
-     */
-    private fun releasePendingBitmaps() {
-        while (pendingRelease.isNotEmpty()) {
-            val bitmap = pendingRelease.poll()
+    /** 只回收超出保留窗口的旧帧 */
+    private fun drainInFlight(keep: Int) {
+        while (inFlightBitmaps.size > keep) {
+            val bitmap = inFlightBitmaps.removeFirst()
             if (!bitmap.isClosed) {
                 bitmapPool.release(bitmap)
             }
         }
     }
-    
+
+    /**
+     * 换集/换线前暂停渲染。只关开关，不 close Bitmap（Compose 可能仍在读）。
+     */
+    fun pauseRendering() {
+        synchronized(this) {
+            renderEnabled = false
+        }
+    }
+
+    fun resumeRendering() {
+        synchronized(this) {
+            renderEnabled = true
+        }
+    }
+
+    /** 清空画面，不销毁 Bitmap，避免 Skiko SIGSEGV */
+    fun clearFrameSoft() {
+        synchronized(this) {
+            imageBitmapState.value = null
+        }
+    }
+
     /**
      * 清理帧渲染资源（用于画质切换等场景）
      */
     fun cleanup() {
         synchronized(this) {
-            // 清理待释放的 bitmap
-            releasePendingBitmaps()
-            
-            // 清理当前 bitmap
-            currentBitmap?.let { bitmap ->
-                if (!bitmap.isClosed) {
-                    bitmap.close()
-                }
-                currentBitmap = null
-            }
-            
-            // 清空图像状态
+            renderEnabled = false
             imageBitmapState.value = null
-            
-            log.debug("帧渲染器资源已清理")
+            currentBitmap?.let { inFlightBitmaps.addLast(it) }
+            currentBitmap = null
+            // 换集时保留全部 in-flight，等后续帧自然挤出；避免立刻 close
+            log.debug("帧渲染器资源已清理（软清理）")
         }
     }
     
@@ -231,18 +244,18 @@ class VlcjFrameRenderer(
             
             try {
                 log.debug("=====开始释放帧渲染器资源=====")
-                
-                // 清理 BitmapPool
+                renderEnabled = false
+                imageBitmapState.value = null
+                currentBitmap?.let { inFlightBitmaps.addLast(it) }
+                currentBitmap = null
+                // 真正退出时才关闭；先清空 UI 引用
+                while (inFlightBitmaps.isNotEmpty()) {
+                    val bitmap = inFlightBitmaps.removeFirst()
+                    if (!bitmap.isClosed) bitmap.close()
+                }
                 bitmapPool.clear()
-                log.debug("已清理 BitmapPool 中的所有 Bitmap 实例")
-                
-                // 清理帧数据
-                cleanup()
-                
-                // 清理引用
                 byteArray = null
                 info = null
-                
                 log.debug("=====帧渲染器资源释放成功=====")
             } catch (e: Throwable) {
                 log.error("释放帧渲染器资源时出错：", e)

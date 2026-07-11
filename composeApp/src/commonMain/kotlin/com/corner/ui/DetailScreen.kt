@@ -26,6 +26,8 @@ import androidx.compose.foundation.window.WindowDraggableArea
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -54,9 +56,13 @@ import com.corner.util.settings.getPlayerSetting
 import com.corner.catvodcore.bean.Vod
 import com.corner.catvodcore.bean.Vod.Companion.isEmpty
 import com.corner.catvodcore.bean.Episode
+import com.corner.catvodcore.bean.Parse
 import com.corner.catvodcore.bean.Url
-import com.corner.util.net.Utils
+import com.corner.catvodcore.config.ApiConfig
+import com.corner.catvodcore.config.ParseConfig
 import com.corner.catvodcore.viewmodel.GlobalAppState
+import com.corner.catvodcore.bean.Sub
+import com.corner.util.net.Utils
 import com.corner.catvodcore.viewmodel.GlobalAppState.hideProgress
 import com.corner.catvodcore.viewmodel.GlobalAppState.showProgress
 import com.corner.ui.nav.data.DetailScreenState
@@ -147,10 +153,9 @@ fun WindowScope.DetailScene(vm: DetailViewModel, onClickBack: () -> Unit) {
         }
         onDispose {
             if (!GlobalAppState.closeApp.value) {
-                //重置播放器状态
-                vm.clear()
+                // 对齐 TV：离开详情仅 stop 播放，保留 VLC 实例以便快速返回
+                vm.clear(releaseController = false)
                 if (localShowPngDialog) {
-                    //关闭websocket服务
                     BrowserUtils.cleanup()
                 }
             }
@@ -187,6 +192,24 @@ fun WindowScope.DetailScene(vm: DetailViewModel, onClickBack: () -> Unit) {
                             }
                         }, actions = {
                             IconButton(
+                                onClick = { vm.toggleKeep() },
+                                enabled = !model.isLoading && detail.vodId.isNotBlank(),
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                            ) {
+                                Icon(
+                                    imageVector = if (model.isKept) Icons.Filled.Star else Icons.Outlined.StarOutline,
+                                    contentDescription = if (model.isKept) "取消收藏" else "加入收藏",
+                                    modifier = Modifier.size(24.dp),
+                                    tint = if (model.isKept) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    }
+                                )
+                            }
+                            IconButton(
                                 onClick = {
                                     scope.launch {
 
@@ -198,9 +221,10 @@ fun WindowScope.DetailScene(vm: DetailViewModel, onClickBack: () -> Unit) {
                                          * 传入releaseController = false时不释放播放器资源
                                          * */
                                         log.info("<DetailScreen>执行快速搜索，释放非播放器的其他资源")
-                                        vm.clear(false)
-                                        vm.quickSearch()
-                                        SnackBar.postMsg("执行快速搜索", type = SnackBar.MessageType.INFO)
+                                        vm.clear(false) {
+                                            vm.quickSearch()
+                                            SnackBar.postMsg("执行快速搜索", type = SnackBar.MessageType.INFO)
+                                        }
                                     }
                                 },
                                 enabled = !model.isLoading,
@@ -417,6 +441,13 @@ fun WindowScope.DetailScene(vm: DetailViewModel, onClickBack: () -> Unit) {
                                     Levels(vm, urls, showUrl)
                                     // 线路选择
                                     Flags(vm)
+                                    // 解析器：仅当前集需要全局解析时显示（对齐 TV）
+                                    if (model.useParse && ParseConfig.hasParse()) {
+                                        ParseSelector(vm)
+                                    }
+                                    if (model.availableSubs.isNotEmpty()) {
+                                        SubtitleSelector(vm, model.availableSubs, model.selectedSubUrl)
+                                    }
                                     // 底部留白
                                     Spacer(modifier = Modifier.weight(1f))
                                 }
@@ -547,6 +578,125 @@ private fun Levels(
                                 maxLines = 1
                             )
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 解析器选择
+ */
+@Composable
+private fun ParseSelector(vm: DetailViewModel) {
+    val apiRef = ApiConfig.api.ref
+    val parses = remember(apiRef) { ParseConfig.getParses() }
+    var selectedName by remember(apiRef) { mutableStateOf(ParseConfig.getParse().name) }
+
+    LaunchedEffect(apiRef) {
+        selectedName = ParseConfig.getParse().name
+    }
+
+    Column(
+        modifier = Modifier
+            .padding(vertical = 12.dp)
+            .fillMaxWidth()
+    ) {
+        Text(
+            text = "解析器",
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Medium),
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(start = 8.dp, bottom = 8.dp)
+        )
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(vertical = 8.dp, horizontal = 12.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            items(parses, key = { it.name }) { parse ->
+                val isSelected = parse.name == selectedName
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isSelected)
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(
+                        width = if (isSelected) 1.5.dp else 1.dp,
+                        color = if (isSelected)
+                            MaterialTheme.colorScheme.primary
+                        else
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
+                    ),
+                    onClick = {
+                        selectedName = parse.name
+                        vm.selectParse(parse)
+                    },
+                    modifier = Modifier.height(40.dp)
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    ) {
+                        Text(
+                            text = "${parse.name}（${ParseConfig.typeLabel(parse.type)}）",
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                            ),
+                            color = if (isSelected)
+                                MaterialTheme.colorScheme.primary
+                            else
+                                MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubtitleSelector(vm: DetailViewModel, subs: List<Sub>, selectedUrl: String) {
+    Column(
+        modifier = Modifier
+            .padding(vertical = 8.dp)
+            .fillMaxWidth()
+    ) {
+        Text(
+            text = "字幕",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(start = 8.dp, bottom = 8.dp)
+        )
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp),
+        ) {
+            items(subs, key = { it.url }) { sub ->
+                val selected = sub.url == selectedUrl
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(
+                        width = if (selected) 1.5.dp else 1.dp,
+                        color = if (selected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
+                    ),
+                    onClick = { vm.selectSubtitle(sub.url) },
+                    modifier = Modifier.height(36.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 14.dp)) {
+                        Text(
+                            text = sub.label(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (selected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
             }
@@ -695,15 +845,7 @@ private fun quickSearchResult(
             ) {
                 items(searchResultList.value) {
                     QuickSearchItem(it) {
-                        SiteViewModel.viewModelScope.launch {
-                            try {
-                                log.debug("开始加载新内容...")
-                                component.loadDetail(it)
-                            } catch (e: Exception) {
-                                log.error("加载详情失败: {}", e.message, e)
-                                SnackBar.postMsg("加载失败: ${e.message}", type = SnackBar.MessageType.ERROR)
-                            }
-                        }
+                        component.loadDetail(it)
                     }
                 }
             }
@@ -934,6 +1076,9 @@ fun EpChooser(vm: DetailViewModel, modifier: Modifier) {
         EpisodeGrid(
             episodes = epList,
             currentEp = currentEp,
+            siteKey = detail.value.site?.key.orEmpty(),
+            flag = detail.value.currentFlag.flag.orEmpty(),
+            titleHint = detail.value.vodName.orEmpty(),
             onEpisodeClick = { episode ->
                 vm.chooseEp(episode) { url ->
                     uriHandler.openUri(url)
@@ -959,12 +1104,16 @@ fun EpChooser(vm: DetailViewModel, modifier: Modifier) {
 fun EpisodeGrid(
     episodes: List<Episode>,
     currentEp: Episode?,
+    siteKey: String,
+    flag: String,
+    titleHint: String,
     onEpisodeClick: (Episode) -> Unit,
     modifier: Modifier = Modifier,
     scope: CoroutineScope = rememberCoroutineScope()
 ) {
     val gridState = rememberLazyGridState()
     var clickedEpisodeUrl by remember { mutableStateOf<String?>(null) }
+    var downloadingUrl by remember { mutableStateOf<String?>(null) }
 
     Box(modifier = modifier) {
         LazyVerticalGrid(
@@ -991,6 +1140,7 @@ fun EpisodeGrid(
                 EpisodeItem(
                     isSelected = isSelected,
                     episode = episode,
+                    isDownloading = downloadingUrl == episode.url,
                     onSelect = {
                         clickedEpisodeUrl = episode.url
                         onEpisodeClick(episode)
@@ -999,6 +1149,50 @@ fun EpisodeGrid(
                             delay(1000)
                             if (clickedEpisodeUrl == episode.url) {
                                 clickedEpisodeUrl = null
+                            }
+                        }
+                    },
+                    onDownload = {
+                        if (downloadingUrl != null) {
+                            SnackBar.postMsg("已有下载任务进行中", type = SnackBar.MessageType.WARNING)
+                            return@EpisodeItem
+                        }
+                        downloadingUrl = episode.url
+                        scope.launch {
+                            try {
+                                SnackBar.postMsg("开始下载: ${episode.name}", type = SnackBar.MessageType.INFO)
+                                val result = com.corner.util.download.VideoDownloadService.downloadEpisode(
+                                    siteKey = siteKey,
+                                    flag = flag,
+                                    episode = episode,
+                                    titleHint = titleHint,
+                                ) { progress ->
+                                    progress.percent?.let { p ->
+                                        if (p >= 1f || (p * 100).toInt() % 20 == 0) {
+                                            // 进度提示节流在服务内已按切片更新，这里只在关键点提示
+                                        }
+                                    }
+                                }
+                                result.onSuccess { file ->
+                                    if (file.path.isBlank()) {
+                                        SnackBar.postMsg(
+                                            "已提交下载: ${episode.name}",
+                                            type = SnackBar.MessageType.SUCCESS
+                                        )
+                                    } else {
+                                        SnackBar.postMsg(
+                                            "下载完成: ${file.name}",
+                                            type = SnackBar.MessageType.SUCCESS
+                                        )
+                                    }
+                                }.onFailure {
+                                    SnackBar.postMsg(
+                                        "下载失败: ${it.message}",
+                                        type = SnackBar.MessageType.ERROR
+                                    )
+                                }
+                            } finally {
+                                downloadingUrl = null
                             }
                         }
                     },
@@ -1206,8 +1400,11 @@ fun EpisodeItem(
     isSelected: Boolean,
     episode: Episode,
     onSelect: (Episode) -> Unit,
-    isLoading: Boolean
+    onDownload: () -> Unit,
+    isLoading: Boolean,
+    isDownloading: Boolean = false,
 ) {
+    val scope = rememberCoroutineScope()
     // 管理实际的加载状态，确保至少显示1秒
     var actualLoadingState by remember { mutableStateOf(false) }
     var loadingStartTime by remember { mutableStateOf<Long?>(null) }
@@ -1254,46 +1451,34 @@ fun EpisodeItem(
             text = episode.name,
             onClick = { onSelect(episode) },
             selected = isSelected,
-            loading = actualLoadingState,
+            loading = actualLoadingState || isDownloading,
             tag = {
-                if (Utils.isDownloadLink(episode.url)){
-                    true to "下载"
-                }else{
-                    false to ""
+                when {
+                    Utils.isDownloadLink(episode.url) -> true to "下载"
+                    isDownloading -> true to "下载中"
+                    else -> false to ""
                 }
             },
-            trailingContent = if (Utils.isDownloadLink(episode.url)) {
-                @Composable {
-                    IconButton(
-                        onClick = {
-                            try {
-                                val desktop = java.awt.Desktop.getDesktop()
-                                if (desktop.isSupported(java.awt.Desktop.Action.BROWSE)) {
-                                    desktop.browse(java.net.URI(episode.url))
-                                    SnackBar.postMsg("已启动下载: ${episode.name}", type = SnackBar.MessageType.INFO)
-                                }
-                            } catch (e: Exception) {
-                                log.error("下载失败", e)
-                                SnackBar.postMsg("下载失败: ${e.message}", type = SnackBar.MessageType.ERROR)
-                            }
+            trailingContent = {
+                IconButton(
+                    onClick = onDownload,
+                    enabled = !isDownloading,
+                    modifier = Modifier
+                        .size(28.dp)
+                        .padding(2.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Download,
+                        contentDescription = "下载",
+                        tint = if (isSelected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
                         },
-                        modifier = Modifier
-                            .size(28.dp)
-                            .padding(2.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Download,
-                            contentDescription = "下载",
-                            tint = if (isSelected) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
+                        modifier = Modifier.size(16.dp)
+                    )
                 }
-            } else null,
+            },
             modifier = Modifier.height(48.dp).fillMaxWidth(),
             enableTooltip = false
         )

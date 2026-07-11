@@ -4,6 +4,10 @@ import cn.hutool.core.io.file.FileNameUtil
 import com.corner.catvodcore.viewmodel.GlobalAppState.hideProgress
 import com.corner.catvodcore.viewmodel.GlobalAppState.showProgress
 import com.corner.server.logic.proxy
+import com.corner.server.ActionHandler
+import com.corner.server.LocalFileHandler
+import com.corner.server.PlaybackMediaState
+import com.corner.server.RemoteDeviceInfo
 import com.corner.util.net.createDefaultOkHttpClient
 import com.corner.ui.scene.SnackBar
 import com.corner.util.m3u8.M3U8Cache
@@ -15,6 +19,8 @@ import io.ktor.server.application.*
 import io.ktor.server.http.content.*
 import io.ktor.server.plugins.origin
 import io.ktor.server.request.receive
+import io.ktor.server.request.receiveMultipart
+import io.ktor.server.request.receiveParameters
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
@@ -57,8 +63,60 @@ suspend fun errorResp(call: ApplicationCall, msg: String) {
     ) {}
 }
 
+private fun escapeJs(value: String): String {
+    return value
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+}
+
 fun Application.configureRouting() {
     routing {
+        get("/action") {
+            ActionHandler.handle(call.request.queryParameters.toSingleValueMap())
+            call.respondText("OK")
+        }
+        post("/action") {
+            ActionHandler.handle(call.receiveParameters().toSingleValueMap())
+            call.respondText("OK")
+        }
+        get("/media") {
+            call.respondText(PlaybackMediaState.toJson(), ContentType.Application.Json)
+        }
+        get("/device") {
+            call.respondText(RemoteDeviceInfo.toJson(), ContentType.Application.Json)
+        }
+
+        get("/file") {
+            LocalFileHandler.handleFile(call, "/")
+        }
+        get("/file/{path...}") {
+            val subPath = call.parameters.getAll("path")?.joinToString("/").orEmpty()
+            LocalFileHandler.handleFile(call, "/$subPath")
+        }
+        post("/upload") {
+            LocalFileHandler.handleUpload(call)
+        }
+        post("/newFolder") {
+            LocalFileHandler.handleNewFolder(call)
+        }
+        post("/delFolder") {
+            LocalFileHandler.handleDelete(call)
+        }
+        post("/delFile") {
+            LocalFileHandler.handleDelete(call)
+        }
+
+        staticResources("/css", "remote/css") {
+            contentType { ContentType.Text.CSS }
+        }
+        staticResources("/js", "remote/js") {
+            contentType {
+                if (it.path.endsWith(".js")) ContentType.Text.JavaScript else null
+            }
+        }
+
         get("/openapi/documentation.yaml") {
             val resource = this::class.java.classLoader.getResourceAsStream("openapi/documentation.yaml")
             if (resource != null) {
@@ -126,6 +184,24 @@ fun Application.configureRouting() {
          */
         get("/health") {
             call.respondText("OK", ContentType.Text.Plain)
+        }
+
+        /**
+         * Web 解析页面（与 TV /parse 兼容）
+         */
+        get("/parse") {
+            val jxs = call.request.queryParameters["jxs"].orEmpty()
+            val url = call.request.queryParameters["url"].orEmpty()
+            val template = this::class.java.classLoader
+                .getResourceAsStream("parse.html")
+                ?.bufferedReader()
+                ?.use { it.readText() }
+            if (template == null) {
+                call.respondText("parse.html not found", status = HttpStatusCode.NotFound)
+            } else {
+                val html = String.format(template, escapeJs(jxs), escapeJs(url))
+                call.respondText(html, ContentType.Text.Html)
+            }
         }
 
         /**
@@ -206,29 +282,12 @@ fun Application.configureRouting() {
          */
         get("/") {
             try {
-                // 从 classpath 加载静态资源
-                val resource = this::class.java.classLoader.getResource("LumenTV Proxy Placeholder Webpage.html")
+                val resource = this::class.java.classLoader.getResourceAsStream("remote/index.html")
                 if (resource != null) {
-                    val content = resource.readText(Charsets.UTF_8)
+                    val content = resource.bufferedReader().use { it.readText() }
                     call.respondText(content, ContentType.Text.Html)
                 } else {
-                    // Fallback: 尝试从文件系统读取
-                    val htmlFile = File("src/commonMain/resources/LumenTV Proxy Placeholder Webpage.html")
-                    if (htmlFile.exists()) {
-                        call.respondFile(htmlFile)
-                    } else {
-                        call.respondText(
-                            "欢迎使用 LumenTV Compose 本地服务器\n\n"
-                            + "可用端点:\n"
-                            + "- /health - 健康检查\n"
-                            + "- /swagger - API 文档\n"
-                            + "- /postMsg - 发送消息通知\n"
-                            + "- /proxy - 代理请求\n"
-                            + "- /video/proxy - 视频代理\n"
-                            + "- /ws/video-events - WebSocket 连接",
-                            status = HttpStatusCode.OK
-                        )
-                    }
+                    call.respondText("LumenTV 遥控面板未找到", status = HttpStatusCode.NotFound)
                 }
             } catch (e: Exception) {
                 log.error("根路径访问失败", e)
@@ -553,7 +612,10 @@ fun Application.configureRouting() {
                 return@get
             }
 
-            call.respondText(content, ContentType.Application.OctetStream)
+            call.respondText(
+                content,
+                ContentType.parse("application/vnd.apple.mpegurl"),
+            )
         }
 
         /**

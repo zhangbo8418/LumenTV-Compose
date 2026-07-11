@@ -34,12 +34,17 @@
 ## 核心功能
 
 ### 环境要求
-- **Java 版本**: Java 8 或更高版本 (推荐 Java 17+)
-- **操作系统**: Windows 10/11, macOS, Linux
-- **VLC 播放器**: 如需使用内部播放器，请安装 VLC
+- **操作系统**: Windows 7/10/11（发行包自带 JDK 与 Win10 兼容库）, macOS (Intel / Apple Silicon), Linux
+- **发行包**: 已捆绑 Java 运行时、Python 3.12 与 ffmpeg，一般无需再装 JDK / Python / ffmpeg
+- **开发调试**: 推荐本机 Java 17+；未执行 `prepareBundledPython` / `prepareBundledFfmpeg` 时可回退系统 `python3` / `ffmpeg`
+- **VLC 播放器**: 如需使用内部播放器，请安装 VLC（Windows 发行包已附带部分 VLC 原生库）
 
 ### 爬虫支持
-- 本项目现在只支持 Java 爬虫，JS 和 Py 暂时没有计划，过多类型的语言现在感觉不是很有必要。编写爬虫现在还是有门槛，语言多也不会有很多人贡献代码。
+- 支持 **Java JAR**、**JavaScript (.js)**、**Python (.py)** 三类爬虫
+- JS 引擎基于 QuickJS（`wang.harlon.quickjs`）
+- Python 爬虫随发行包内置（`requests` / `lxml` / `pycryptodome` / `certifi`）；开发时可 `./gradlew prepareBundledPython`
+- 视频下载合并用 ffmpeg 随发行包内置；开发时可 `./gradlew prepareBundledFfmpeg`
+- Playwright 爬虫继续支持（用于 WAF 绕过等场景）
 
 ### 混淆M3U8链接播放
 本项目支持播放经过简单混淆的M3U8文件，如果遇到通过图床传输数据的M3U8文件时会切换到系统默认浏览器播放。
@@ -74,7 +79,7 @@
 - 支持使用 Playwright 爬虫，使用 Playwright 爬虫时，请确保已安装 Playwright。
 
 ### 平台支持
-本项目按道理支持 `win(10/11)/linux/macos`，但只在 `win` 上测试过。
+本项目支持 `Windows (含 Win7 兼容策略) / Linux / macOS arm64 / macOS amd64`。GitHub Actions 会分别打包 macOS Apple Silicon 与 Intel 产物。
 
 ## 更新日志 (Changelog)
 您可以从以下链接查看更新历史日志：
@@ -114,7 +119,11 @@
 - [X] 支持广告过滤
 - [X] 自更新
 - [X] 添加playewright爬虫支持
-- [ ] 下载 aria2
+- [x] 下载 aria2
+- [x] JS / Python 爬虫支持
+- [x] 直播基础功能（M3U/TXT/JSON 解析）
+- [x] Web 遥控面板（搜索/推送/弹幕/设置/本地文件）
+- [x] 壁纸配置 / 弹幕系统 / DLNA 投出
 ## 截图
 ### 首页
 ![](readme_images/home.png)

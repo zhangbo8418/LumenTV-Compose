@@ -329,7 +329,7 @@ object SpiderTestUtil {
 
     fun testAllSpiders(onStatusChange: (String, SpiderStatus) -> Unit) {
         cancelAllTests()
-        val type3Sites = ApiConfig.api.sites.filter { it.type == 3 }
+        val type3Sites = ApiConfig.api.sites.filter { it.type == 3 && !it.isHide() }
         if (type3Sites.isEmpty()) return
 
         globalTestJob = CoroutineScope(Dispatchers.IO).launch {

@@ -3,6 +3,7 @@ package com.corner.service.player
 import com.corner.catvodcore.bean.Result
 import com.corner.catvodcore.bean.Episode
 import com.corner.catvodcore.bean.v
+import com.corner.server.PlaybackMediaState
 import com.corner.util.play.Play
 import org.slf4j.LoggerFactory
 
@@ -25,7 +26,7 @@ class OutiePlayerStrategy : PlayerStrategy {
             log.info("使用外部播放器播放: {}", episode.name)
             
             // 启动外部播放器
-            Play.start(result.url.v(), episode.name)
+            Play.start(result, episode.name, PlaybackMediaState.subtitleUrl.takeIf { it.isNotBlank() })
             
             // 通知播放开始
             onPlayStarted()

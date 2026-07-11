@@ -15,6 +15,8 @@ data class Site(
     var playUrl: String? = null,
     var quickSearch: Int? = null,
     var playerType: String? = null,
+    /** 对齐 TV Site.hide：1=隐藏（如 proxy_* 辅助源），不出现在选站列表 */
+    var hide: Int? = null,
     var categories: Set<String> = mutableSetOf(),
     @Serializable(ToStringSerializer::class)
     var ext: String = "",
@@ -46,6 +48,8 @@ data class Site(
     fun isSearchable(): Boolean = searchable == 1
 
     fun isChangeable(): Boolean = changeable == 1
+
+    fun isHide(): Boolean = hide == 1
 
     fun toggleSearchable() = run {
         searchable = if (searchable == 1) 0

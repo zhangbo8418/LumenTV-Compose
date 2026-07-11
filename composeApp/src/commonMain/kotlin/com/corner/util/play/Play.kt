@@ -24,14 +24,14 @@ private val log = LoggerFactory.getLogger("Play")
 
 class Play {
     companion object{
-        fun start(result:Result?, title: String?){
+        fun start(result:Result?, title: String?, subtitleUrl: String? = null){
             CoroutineScope(Dispatchers.IO).launch{
-                getProcessBuilder(result, title)?.start()
+                getProcessBuilder(result, title, subtitleUrl)?.start()
             }
         }
-        fun start(url: String, title: String?){
+        fun start(url: String, title: String?, subtitleUrl: String? = null){
             CoroutineScope(Dispatchers.IO).launch{
-                getProcessBuilder(url, title)?.start()
+                getProcessBuilder(url, title, subtitleUrl)?.start()
             }
         }
     }
@@ -42,7 +42,7 @@ class Play {
  * vlc
  * mpc-be
  */
-fun getProcessBuilder(result: Result?, title: String?): ProcessBuilder? {
+fun getProcessBuilder(result: Result?, title: String?, subtitleUrl: String? = null): ProcessBuilder? {
     if (result == null) return null
     val playerPath = SettingStore.getPlayerSetting()[1] as String
 
@@ -56,18 +56,17 @@ fun getProcessBuilder(result: Result?, title: String?): ProcessBuilder? {
 
     val compare = File(playerPath).name.lowercase(Locale.getDefault())
     if(compare.contains("potplayer") && checkPlayer(playerPath)){
-        return PotPlayer.getProcessBuilder(result,title ?: "TV", playerPath)
+        return buildExternal(playerPath, PotPlayer.url(result.url.v()), PotPlayer.title(title ?: "TV"), PotPlayer.headers(result.header), subtitleUrl?.let { PotPlayer.subtitle(it) })
     }else if(compare.contains("vlc") && checkPlayer(playerPath)){
-        return VLC.getProcessBuilder(result, title ?: "TV", playerPath)
+        return buildExternal(playerPath, result.url.v(), VLC.title(title ?: "TV"), subtitleUrl?.let { VLC.subtitle(it) })
     }
     else if(compare.contains("mpc-be") && checkPlayer(playerPath)){
-        return MPC.getProcessBuilder(result, title ?: "TV", playerPath)
+        return MPC.getProcessBuilder(result,title ?: "TV", playerPath)
     }
-//    return Default.getProcessBuilder(result, title ?: "TV", playerPath)
     return null
 }
 
-fun getProcessBuilder(url:String, title: String?): ProcessBuilder? {
+fun getProcessBuilder(url:String, title: String?, subtitleUrl: String? = null): ProcessBuilder? {
     if (StringUtils.isBlank(url)) return null
     val playerPath = SettingStore.getPlayerSetting()[1] as String
 
@@ -81,15 +80,20 @@ fun getProcessBuilder(url:String, title: String?): ProcessBuilder? {
 
     val compare = File(playerPath).name.lowercase(Locale.getDefault())
     if(compare.contains("potplayer") && checkPlayer(playerPath)){
-        return PotPlayer.getProcessBuilder(url,title ?: "TV", playerPath)
+        return buildExternal(playerPath, PotPlayer.url(url), PotPlayer.title(title ?: "TV"), subtitleUrl?.let { PotPlayer.subtitle(it) })
     }else if(compare.contains("vlc") && checkPlayer(playerPath)){
-        return VLC.getProcessBuilder(url, title ?: "TV", playerPath)
+        return buildExternal(playerPath, url, VLC.title(title ?: "TV"), subtitleUrl?.let { VLC.subtitle(it) })
     }
     else if(compare.contains("mpc-be") && checkPlayer(playerPath)){
         return MPC.getProcessBuilder(url, title ?: "TV", playerPath)
     }
-//    return Default.getProcessBuilder(url, title ?: "TV", playerPath)
     return null
+}
+
+private fun buildExternal(playerPath: String, vararg args: String?): ProcessBuilder {
+    val command = mutableListOf(playerPath)
+    args.filterNotNull().filter { it.isNotBlank() }.forEach { command.add(it) }
+    return ProcessBuilder(command).redirectOutput(Paths.playerLog())
 }
 
 

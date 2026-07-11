@@ -4,6 +4,7 @@ enum class TVScreen(val title: String) {
     VideoScreen("Video Screen"),
     SearchScreen("Search Screen"),
     HistoryScreen("History Screen"),
+    LiveScreen("Live Screen"),
     SettingsScreen("Settings Screen"),
     DetailScreen("Detail Screen"),
     DLNAPlayerScreen("DLNA Player Screen")

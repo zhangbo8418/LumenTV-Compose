@@ -26,12 +26,19 @@ import androidx.navigation.compose.rememberNavController
 import com.corner.util.settings.SettingStore
 import com.corner.catvodcore.bean.Vod
 import com.corner.catvodcore.enum.Menu
+import com.corner.cast.CastReceivePayload
 import com.corner.catvodcore.viewmodel.DetailFromPage
+import com.corner.ui.cast.ReceiveCastDialog
 import com.corner.catvodcore.viewmodel.GlobalAppState
+import com.corner.catvodcore.push.PushService
+import com.corner.init.Init
+import com.corner.server.ServerEvent
+import com.corner.ui.danmaku.DanmakuManager
 import com.corner.ui.DLNAPlayer
 import com.corner.ui.DetailScene
 import com.corner.ui.FpsMonitor
 import com.corner.ui.HistoryScene
+import com.corner.ui.LiveScene
 import com.corner.ui.SettingScene
 import com.corner.ui.nav.vm.*
 import com.corner.ui.navigation.TVScreen
@@ -40,8 +47,11 @@ import com.corner.ui.search.SearchScene
 import com.corner.ui.video.VideoScene
 import com.corner.util.FirefoxGray
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import com.corner.util.settings.SettingType
 import org.slf4j.LoggerFactory
 
@@ -68,6 +78,47 @@ fun WindowScope.RootContent(
     }
 
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        ServerEvent.pushUrl.collect { text ->
+            toDetail(PushService.buildVod(text), DetailFromPage.HOME)
+        }
+    }
+    LaunchedEffect(Unit) {
+        ServerEvent.searchWord.collect { word ->
+            GlobalAppState.pendingSearch.value = word
+            navController.navigate(TVScreen.SearchScreen.name)
+        }
+    }
+    LaunchedEffect(Unit) {
+        ServerEvent.settingConfig.collect { (url, _) ->
+            if (url.isNotBlank()) {
+                SettingStore.setValue(SettingType.VOD, url)
+                Init.initConfig(forceReinit = true)
+            }
+        }
+    }
+    LaunchedEffect(Unit) {
+        ServerEvent.danmakuText.collect { text ->
+            DanmakuManager.send(text)
+        }
+    }
+
+    var castPayload by remember { mutableStateOf<CastReceivePayload?>(null) }
+    LaunchedEffect(Unit) {
+        ServerEvent.castReceive.collect { castPayload = it }
+    }
+    castPayload?.let { payload ->
+        ReceiveCastDialog(
+            payload = payload,
+            onClose = { castPayload = null },
+            onAccepted = { vod ->
+                GlobalAppState.chooseVod.value = vod
+                GlobalAppState.detailFrom = DetailFromPage.HOME
+                navController.navigate(TVScreen.DetailScreen.name)
+            },
+        )
+    }
 
     // 创建一个 SettingViewModel 实例来监听设置变化
     val settingViewModel: SettingViewModel = viewModel { SettingViewModel() }
@@ -96,6 +147,7 @@ fun WindowScope.RootContent(
                         when (menu) {
                             Menu.SEARCH -> navController.navigate(TVScreen.SearchScreen.name)
                             Menu.HOME -> navController.navigate(TVScreen.VideoScreen.name)
+                            Menu.LIVE -> navController.navigate(TVScreen.LiveScreen.name)
                             Menu.SETTING -> navController.navigate(TVScreen.SettingsScreen.name)
                             Menu.HISTORY -> navController.navigate(TVScreen.HistoryScreen.name)
                         }
@@ -118,6 +170,12 @@ fun WindowScope.RootContent(
                     HistoryScene(
                         viewModel { HistoryViewModel() },
                         { toDetail(it, DetailFromPage.HOME) }) { navController.popBackStack() }
+                }
+
+                composable(TVScreen.LiveScreen.name) {
+                    LiveScene(
+                        viewModel { LiveViewModel() }
+                    ) { navController.popBackStack() }
                 }
 
                 composable(TVScreen.SettingsScreen.name) {

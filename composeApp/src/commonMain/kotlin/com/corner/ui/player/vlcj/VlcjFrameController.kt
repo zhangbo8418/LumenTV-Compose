@@ -8,6 +8,7 @@ import com.corner.ui.nav.vm.DetailViewModel
 import com.corner.ui.player.BitmapPool
 import com.corner.ui.player.PlayerController
 import com.corner.ui.player.PlayerLifecycleManager
+import com.corner.ui.player.frame.FramePlayerController
 import com.corner.ui.player.frame.FrameRenderer
 import com.corner.util.play.BrowserUtils.scope
 import com.corner.util.thisLogger
@@ -16,7 +17,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import uk.co.caprica.vlcj.player.base.MediaPlayer
 import kotlin.math.max
 
@@ -34,18 +34,19 @@ class VlcjFrameController(
     component: DetailViewModel,
     private val controller: VlcjController = VlcjController(component),
     private val bitmapPool: BitmapPool = BitmapPool(3)
-) : FrameRenderer, PlayerController by controller, AutoCloseable {
+) : FramePlayerController, FrameRenderer, PlayerController by controller, AutoCloseable {
     private val log = thisLogger()
     
     // 委托给独立的帧渲染器
     private val frameRenderer: VlcjFrameRenderer = VlcjFrameRenderer(bitmapPool)
+    private var videoSurface: uk.co.caprica.vlcj.player.embedded.videosurface.CallbackVideoSurface? = null
     
     // 暴露帧渲染器的状态（保持向后兼容）
-    val imageBitmapState: MutableState<ImageBitmap?> = frameRenderer.imageBitmapState
+    override val imageBitmapState: MutableState<ImageBitmap?> = frameRenderer.imageBitmapState
     
     @Volatile
     private var isReleased = false
-    fun isReleased(): Boolean = isReleased
+    override fun isReleased(): Boolean = isReleased
     
     private var historyCollectJob: Job? = null
     private val _size = MutableStateFlow(0 to 0)
@@ -67,16 +68,60 @@ class VlcjFrameController(
 
     override fun load(url: String): PlayerController {
         scope.launch {
-            log.info("load - 开始加载视频...")
-            controller.loadURL(url, 1000)
-            controller.stop()
-            log.info("load - 视频加载完成，开始初始化播放器")
-            controller.play()//url变化时播放视频
-            delay(500)
+            log.info("load - 开始加载视频: {}", url)
+            controller.loadURL(url, 15_000L)
+            delay(300)
             speed(controller.history.value?.speed?.toFloat() ?: 1f)
-            log.debug("load - 播放历史位置: ${controller.history.value?.position}")
+            log.debug("load - 播放历史位置: {}", controller.history.value?.position)
         }
         return controller
+    }
+
+    fun clearVideoFrame() {
+        frameRenderer.clearFrameSoft()
+    }
+
+    /** 换集：清画面 + 打断卡住的 VLC 加载 */
+    suspend fun stopForRefreshAndAwait() {
+        frameRenderer.clearFrameSoft()
+        frameRenderer.resumeRendering()
+        controller.stopForRefresh()
+        attachVideoSurface()
+    }
+
+    fun stopForRefresh() {
+        frameRenderer.clearFrameSoft()
+        frameRenderer.resumeRendering()
+        controller.stopForRefresh()
+    }
+
+    fun resumeVideoRendering() {
+        attachVideoSurface()
+        frameRenderer.resumeRendering()
+    }
+
+    fun invalidatePendingLoads(): Int {
+        return controller.invalidatePendingLoads()
+    }
+
+    fun currentLoadGeneration(): Int = controller.currentLoadGeneration()
+
+    private fun detachVideoSurface() {
+        runCatching { controller.player?.videoSurface()?.set(null) }
+    }
+
+    private fun attachVideoSurface() {
+        if (isReleased) return
+        val surface = videoSurface ?: return
+        runCatching {
+            controller.player?.videoSurface()?.set(surface)
+        }.onFailure { log.warn("重新绑定视频表面失败: {}", it.message) }
+    }
+
+    fun prepareForEpisodeSwitch() {
+        clearVideoFrame()
+        frameRenderer.resumeRendering()
+        controller.markBufferingForSwitch()
     }
 
     override fun vlcjFrameInit() {
@@ -85,9 +130,9 @@ class VlcjFrameController(
             controller.setLifecycleManager(lifecycleManager)
             controller.init()
             
-            // 使用帧渲染器创建视频表面
-            val videoSurface = frameRenderer.createVideoSurface()
+            videoSurface = frameRenderer.createVideoSurface()
             controller.player?.videoSurface()?.set(videoSurface)
+            frameRenderer.resumeRendering()
             
             isReleased = false
         } catch (e: Exception) {
@@ -136,10 +181,8 @@ class VlcjFrameController(
     }
 
     fun doWithHistory(func: (History) -> History) {
-        runBlocking {
-            if (controller.history.value == null) return@runBlocking
-            controller.history.emit(func(controller.history.value!!))
-        }
+        val current = controller.history.value ?: return
+        controller.history.value = func(current)
     }
 
     @Suppress("unused")
@@ -151,11 +194,19 @@ class VlcjFrameController(
      * 关闭控制器，释放所有资源
      * 实现 AutoCloseable 接口，支持 use 块自动清理
      */
+    fun applySubtitle(url: String) {
+        controller.applySubtitle(url)
+    }
+
+    fun setSubtitleUrl(url: String) {
+        controller.setSubtitleUrl(url)
+    }
+
     override fun close() {
         release()
     }
-    
-    fun release() {
+
+    override fun release() {
         if (isReleased) {
             log.debug("播放器已释放，跳过重复释放")
             return
@@ -210,7 +261,7 @@ class VlcjFrameController(
         }
     }
 
-    fun hasPlayer(): Boolean {
+    override fun hasPlayer(): Boolean {
         return controller.player != null
     }
 }

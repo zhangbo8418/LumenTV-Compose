@@ -1,25 +1,33 @@
 package com.corner.util.net
 
 import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import com.corner.util.json.Jsons
 import com.seiko.imageloader.component.fetcher.FetchResult
 import com.seiko.imageloader.component.fetcher.Fetcher
+import com.seiko.imageloader.model.ImageSourceFrom
+import com.seiko.imageloader.model.toImageSource
 import com.seiko.imageloader.option.Options
-import io.ktor.client.*
-import io.ktor.client.request.*
-import io.ktor.client.statement.*
-import io.ktor.http.*
-import io.ktor.util.*
-import io.ktor.utils.io.jvm.javaio.*
+import io.ktor.client.HttpClient
+import io.ktor.client.request.headers
+import io.ktor.client.request.request
+import io.ktor.client.request.url
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.http.HttpHeaders
+import io.ktor.http.isSuccess
+import io.ktor.util.StringValues
+import io.ktor.utils.io.jvm.javaio.toInputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.jsonObject
-import org.jetbrains.compose.resources.ExperimentalResourceApi
-import org.jetbrains.compose.resources.decodeToImageBitmap
-import kotlin.collections.iterator
+import java.io.ByteArrayInputStream
+import javax.imageio.ImageIO
 import kotlin.time.Duration
 
-
+/**
+ * 带自定义 Header 拉取图片。优先用 ImageIO（TwelveMonkeys 支持 WebP，兼容 Java 17），
+ * 失败再回退 OfSource 交给 Skia Decoder。
+ */
 class KtorHeaderUrlFetcher private constructor(
     private val httpUrl: String,
     httpClient: () -> HttpClient,
@@ -27,7 +35,6 @@ class KtorHeaderUrlFetcher private constructor(
 
     private val httpClient by lazy(httpClient)
 
-    @OptIn(ExperimentalResourceApi::class)
     override suspend fun fetch(): FetchResult {
         var url = httpUrl
         val response = httpClient.request {
@@ -53,41 +60,47 @@ class KtorHeaderUrlFetcher private constructor(
                     HttpHeaders.UserAgent,
                     url.split("@User-Agent=").apply { url = this[0] }[1].split("@")[0]
                 )
-
             }
             url(url)
         }
-        if (response.status.isSuccess()) {
-            val ofSource = FetchResult.OfPainter(
-                painter = BitmapPainter(
-                    withContext(Dispatchers.IO) {
-                        response.bodyAsChannel().toInputStream().readAllBytes()
-                    }.decodeToImageBitmap()
-                )
-            )
-            return ofSource
+        if (!response.status.isSuccess()) {
+            throw RuntimeException("code:${response.status.value}, ${response.status.description}")
         }
-        throw RuntimeException("code:${response.status.value}, ${response.status.description}")
+        val bytes = withContext(Dispatchers.IO) {
+            response.bodyAsChannel().toInputStream().readAllBytes()
+        }
+        val painter = withContext(Dispatchers.IO) {
+            runCatching {
+                ImageIO.read(ByteArrayInputStream(bytes))?.let { BitmapPainter(it.toComposeImageBitmap()) }
+            }.getOrNull()
+        }
+        if (painter != null) {
+            return FetchResult.OfPainter(painter)
+        }
+        return FetchResult.OfSource(
+            imageSource = bytes.toImageSource(),
+            imageSourceFrom = ImageSourceFrom.Network,
+        )
     }
-
 
     class Factory(
         private val httpClient: () -> HttpClient,
     ) : Fetcher.Factory {
         override fun create(data: Any, options: Options): Fetcher? {
-            if (data is String) return KtorHeaderUrlFetcher(data, httpClient)
+            if (data is String && data.startsWith("http", ignoreCase = true)) {
+                return KtorHeaderUrlFetcher(data, httpClient)
+            }
             return null
         }
     }
 
     companion object {
-
         val CustomUrlFetcher = Factory {
             KtorClient.createHttpClient {
                 engine {
                     config {
-                        callTimeout(Duration.parse("2s"))
-                        readTimeout(Duration.parse("2s"))
+                        callTimeout(Duration.parse("15s"))
+                        readTimeout(Duration.parse("15s"))
                     }
                 }
             }

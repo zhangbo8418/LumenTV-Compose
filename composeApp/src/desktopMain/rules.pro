@@ -1,5 +1,36 @@
 -printmapping build/release-mapping.txt
 -libraryjars  <java.home>/jmods/java.base.jmod(!**.jar;!module-info.class)
+-libraryjars  <java.home>/jmods/java.xml.jmod(!**.jar;!module-info.class)
+-libraryjars  <java.home>/jmods/java.desktop.jmod(!**.jar;!module-info.class)
+-libraryjars  <java.home>/jmods/java.logging.jmod(!**.jar;!module-info.class)
+-libraryjars  <java.home>/jmods/java.naming.jmod(!**.jar;!module-info.class)
+-libraryjars  <java.home>/jmods/java.sql.jmod(!**.jar;!module-info.class)
+-libraryjars  <java.home>/jmods/java.management.jmod(!**.jar;!module-info.class)
+-libraryjars  <java.home>/jmods/java.net.http.jmod(!**.jar;!module-info.class)
+
+# 禁止改写 JDK XML API 调用（否则 jUPnP 会出现 DocumentBuilder.parse$xxxx NoSuchMethodError）
+-keep class javax.xml.** { *; }
+-keep class org.w3c.dom.** { *; }
+-keep class org.xml.sax.** { *; }
+-keep class javax.xml.parsers.DocumentBuilder { *; }
+-keepclassmembers class javax.xml.parsers.DocumentBuilder {
+    <methods>;
+}
+-keepclassmembers class javax.xml.parsers.DocumentBuilderFactory {
+    <methods>;
+}
+
+# ImageIO / 直播 Logo / WebP（TwelveMonkeys SPI 被 shrink 会导致 ImageIO 静态初始化失败）
+-keep class javax.imageio.** { *; }
+-keep class javax.imageio.spi.** { *; }
+-keep class com.twelvemonkeys.** { *; }
+-keep class com.github.gotson.nightmonkeys.** { *; }
+-keep class * extends javax.imageio.spi.ImageReaderSpi { *; }
+-keep class * extends javax.imageio.spi.ImageWriterSpi { *; }
+-keep class * extends javax.imageio.spi.ImageInputStreamSpi { *; }
+-keep class * extends javax.imageio.spi.ImageOutputStreamSpi { *; }
+-keep class * extends javax.imageio.spi.ImageTranscoderSpi { *; }
+-keepdirectories META-INF/services
 
 # 核心保持规则
 -keep class com.corner.** { *; }
@@ -16,7 +47,7 @@
 -keep class androidx.compose.** { *; }
 -keep class com.seiko.imageloader.** { *; }
 
-# 关键优化：禁止所有警告和笔记输出
+# 关闭警告和笔记输出
 -dontwarn **
 -dontnote **
 -dontusemixedcaseclassnames
@@ -26,7 +57,7 @@
 -dontnote org.antlr.v4.runtime.**
 
 # 保留必要属性
--keepattributes Signature,InnerClasses,*Annotation*
+-keepattributes Signature,InnerClasses,*Annotation*,EnclosingMethod,Exceptions
 
 # 数据库相关
 -keep class androidx.room.** { *; }
@@ -52,7 +83,12 @@
     public static ** of(...);
     public static ** create(...);
 }
+
+# DLNA / jUPnP：禁止优化改写其对 JDK XML 的调用
 -keep class org.jupnp.** { *; }
+-keepclassmembers class org.jupnp.** { *; }
+-keepnames class org.jupnp.**
+-keep class org.jupnp.binding.xml.** { *; }
 
 # 日志框架（项目使用 Log4j2）
 -keep class org.apache.logging.log4j.** { *; }
@@ -115,6 +151,7 @@
 -keep class com.github.catvod.** { *; }
 -keep class com.corner.init.** { *; }
 -keep class com.corner.server.** { *; }
+-keep class com.fongmi.quickjs.** { *; }
 
 # 针对性禁用警告（避免掩盖真实问题）
 -dontwarn io.ktor.**
@@ -153,4 +190,3 @@
 # 其他优化选项
 -dontusemixedcaseclassnames
 -verbose
-

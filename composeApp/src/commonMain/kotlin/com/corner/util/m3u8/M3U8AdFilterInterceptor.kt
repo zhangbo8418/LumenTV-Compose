@@ -1,7 +1,6 @@
 package com.corner.util.m3u8
 
 import com.corner.util.settings.SettingStore
-import com.corner.ui.scene.SnackBar
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.slf4j.LoggerFactory
@@ -16,8 +15,11 @@ class M3U8AdFilterInterceptor {
             val request = chain.request()
             val url = request.url.toString()
 
-            // 只拦截m3u8请求
-            if (!url.endsWith(".m3u8", ignoreCase = true)) {
+            // 只拦截 m3u8（含 getM3u8?url=xxx.m3u8）
+            if (!url.contains("m3u8", ignoreCase = true)) {
+                return chain.proceed(request)
+            }
+            if (url.contains("proxy/cached_m3u8", ignoreCase = true)) {
                 return chain.proceed(request)
             }
             log.info("拦截请求，URL: $url")
@@ -27,7 +29,9 @@ class M3U8AdFilterInterceptor {
 
             val originalContent = response.body.string()
 
-            // 1. 转换相对路径
+            // 主播放列表无分片广告，只做相对路径展开，避免无意义过滤拖慢起播
+            val isMaster = originalContent.contains("#EXT-X-STREAM-INF")
+
             val baseUrl = url.substringBeforeLast("/") + "/"
             val absolutePathContent = originalContent.lines().joinToString("\n") { line ->
                 when {
@@ -38,23 +42,18 @@ class M3U8AdFilterInterceptor {
                 }
             }
 
-            // 2. 每次请求时获取配置并创建过滤器
-            val config = SettingStore.getM3U8FilterConfig()
-            val filter = M3U8Filter(config)
-            
-            val filteredContent = if (SettingStore.isAdFilterEnabled()) {
-                filter.safelyProcessM3u8(url, absolutePathContent)
+            val filteredContent = if (!isMaster && SettingStore.isAdFilterEnabled()) {
+                val filter = M3U8Filter(SettingStore.getM3U8FilterConfig())
+                val out = filter.safelyProcessM3u8(url, absolutePathContent)
+                val adCount = filter.getFilteredAdCount()
+                if (adCount > 0) {
+                    log.info("广告过滤完成，共过滤 {} 条广告", adCount)
+                }
+                out
             } else {
                 absolutePathContent
             }
 
-            val adCount = filter.getFilteredAdCount()
-            if (adCount > 0) {
-                log.info("广告过滤完成，共过滤 $adCount 条广告")
-                SnackBar.postMsg("广告过滤完成，共过滤 $adCount 条广告")
-            }
-
-            // 3. 直接返回处理后的内容（不再走代理）
             return response.newBuilder()
                 .body(filteredContent.toResponseBody(response.body.contentType()))
                 .build()

@@ -98,7 +98,12 @@ class UpdateManager {
             return when (SysVerUtil.currentOs) {
                 OperatingSystem.Windows -> versionInfo.windows
                 OperatingSystem.Linux -> versionInfo.linux
-                OperatingSystem.MacOS -> versionInfo.mac
+                OperatingSystem.MacOS -> {
+                    when (SysVerUtil.getArchName()) {
+                        "arm64" -> versionInfo.mac_arm64 ?: versionInfo.mac
+                        else -> versionInfo.mac_amd64 ?: versionInfo.mac
+                    }
+                }
                 OperatingSystem.Unknown -> null
             }
         }

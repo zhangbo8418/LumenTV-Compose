@@ -95,6 +95,7 @@ object KtorD {
                     log.warn("Default port {} is occupied, using port {} instead", DEFAULT_PORT, actualPort)
                 }
                 log.info("KtorD started successfully on port: {}", actualPort)
+                com.github.catvod.Proxy.setPort(actualPort)
                 break
             } catch (e: Exception) {
                 // 只处理端口占用异常，其他异常直接抛出

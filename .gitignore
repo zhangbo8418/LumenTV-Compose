@@ -21,3 +21,7 @@ cache
 /desktopApp/data/
 .fleet
 #/composeApp/src/desktopMain/resources/res
+
+# Bundled Python（由 prepareBundledPython 下载，勿提交）
+composeApp/src/desktopMain/appResources/*/python/
+composeApp/src/desktopMain/appResources/*/ffmpeg/

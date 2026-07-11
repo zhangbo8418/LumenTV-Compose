@@ -7,7 +7,7 @@ import com.corner.util.settings.SettingType
 import com.corner.catvodcore.config.ApiConfig
 import com.corner.catvodcore.config.init
 import com.corner.catvodcore.enum.ConfigType
-import com.corner.catvodcore.loader.JarLoader
+import com.corner.catvodcore.loader.BaseLoader
 import com.corner.catvodcore.viewmodel.GlobalAppState
 import com.corner.catvodcore.viewmodel.GlobalAppState.hideProgress
 import com.corner.catvodcore.viewmodel.GlobalAppState.showProgress
@@ -16,7 +16,9 @@ import com.corner.database.appModule
 import com.corner.dlna.TVMUpnpService
 import com.corner.server.KtorD
 import com.corner.ui.player.vlcj.VlcJInit
+import com.corner.ui.scene.SnackBar
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -26,6 +28,7 @@ import org.koin.core.context.startKoin
 import org.slf4j.LoggerFactory
 import androidx.compose.runtime.State
 import com.corner.catvodcore.viewmodel.GlobalAppState.resetAllStates
+import com.corner.database.entity.Config
 import com.corner.util.spider.SpiderTestUtil
 
 private val log = LoggerFactory.getLogger("Init")
@@ -52,6 +55,10 @@ class Init {
                 initJarFileSystemProvider()
                 //Koin
                 initKoin()
+                // JS local 持久化（对齐 TV Prefers）
+                com.github.catvod.utils.Prefers.init(
+                    java.io.File(com.corner.util.io.Paths.root(), "cache/js-prefers.properties")
+                )
                 //Http Server
                 KtorD.init()
                 //点播源配置
@@ -95,7 +102,7 @@ class Init {
                 KtorD.stop()            //stop KtorD
                 stopKoin()              //stop Koin
                 stopDLNA()              //stop DLNA
-                JarLoader.clear()       //clear Jar
+                BaseLoader.clear()       //clear loaders
             } catch (e: Throwable) {
                 log.error("Cleanup error", e)
             }
@@ -140,69 +147,72 @@ class Init {
 
         /**
          * 初始化点播源配置
-         * */
-        fun initConfig(forceReinit: Boolean = false) {
+         * @return 是否加载成功
+         */
+        fun initConfig(forceReinit: Boolean = false): Boolean {
             if (!forceReinit && _isInitializedSuccessfully.value) {
                 log.warn("配置已初始化，跳过重复操作")
-                return
+                return true
+            }
+
+            val vod = SettingStore.getSettingItem(SettingType.VOD.id)
+            if (StringUtils.isBlank(vod)) {
+                log.warn("未配置点播源，跳过初始化")
+                hideProgress()
+                _isInitializedSuccessfully.value = false
+                return false
             }
 
             val siteConfig = runBlocking {
                 withContext(Dispatchers.IO) {
-                    Db.Config.findOneByType(ConfigType.SITE.ordinal.toLong())
+                    Db.Config.find(vod, ConfigType.SITE.ordinal.toLong()).firstOrNull()
+                        ?: Db.Config.findOneByType(ConfigType.SITE.ordinal.toLong())
                 }
             } ?: run {
                 log.error("未找到站点配置")
-                _isInitializedSuccessfully.value = false  // 初始化失败
+                _isInitializedSuccessfully.value = false
                 hideProgress()
-                return
+                return false
             }
 
-            try {
-                log.info("初始化开始....")
-                JarLoader.clear()
-                ApiConfig.clear()
-                GlobalAppState.clear.update { !it }
+            val hadValidConfig = _isInitializedSuccessfully.value && ApiConfig.api.sites.isNotEmpty()
+            val snapshotApi = if (hadValidConfig) ApiConfig.apiFlow.value else null
+            val snapshotHome = if (hadValidConfig) GlobalAppState.home.value else null
 
-                val vod = SettingStore.getSettingItem(SettingType.VOD.id)
+            log.info("初始化开始....")
+            BaseLoader.clear()
+            ApiConfig.clear()
+            GlobalAppState.clear.update { !it }
 
-                if (StringUtils.isBlank(vod)) {
-                    log.warn("未配置点播源，跳过初始化")
-                    hideProgress()
-                    _isInitializedSuccessfully.value = false  // 初始化失败
-                    return
-                }
-
-                ApiConfig.parseConfig(
-                    cfg = siteConfig,
-                    isJson = false,
-                    onSuccess = { _isInitializedSuccessfully.value = true },
-                    onError = { _ ->
-                        _isInitializedSuccessfully.value = false
-                    }
-                ).init()
+            val loaded = loadSiteConfig(siteConfig)
+            if (loaded) {
                 log.info("初始化完成!")
-                _isInitializedSuccessfully.value = true  // 初始化成功
-
-            } catch (e: Exception) {
-                log.error("初始化失败，尝试使用json解析", e)
-                try {
-                    ApiConfig.parseConfig(
-                        cfg = siteConfig,
-                        isJson = true,
-                        onSuccess = { _isInitializedSuccessfully.value = true },
-                        onError = { _ ->
-                            _isInitializedSuccessfully.value = false
-                        }
-                    ).init()
-                    _isInitializedSuccessfully.value = true  // 回退方式初始化成功
-                } catch (e2: Exception) {
-                    log.error("JSON解析失败,初始化配置失败！", e2)
-                    _isInitializedSuccessfully.value = false  // 完全失败
-                    hideProgress()
-                    return
-                }
+                _isInitializedSuccessfully.value = true
+                return true
             }
+
+            if (snapshotApi != null && snapshotHome != null) {
+                ApiConfig.applySnapshot(snapshotApi, snapshotHome)
+                SnackBar.postMsg("配置更新失败，已保留原配置", type = SnackBar.MessageType.WARNING)
+                _isInitializedSuccessfully.value = true
+            } else {
+                SnackBar.postMsg("配置加载失败，请检查点播源地址", type = SnackBar.MessageType.ERROR)
+                _isInitializedSuccessfully.value = false
+            }
+            hideProgress()
+            return false
+        }
+
+        private fun loadSiteConfig(siteConfig: Config): Boolean {
+            if (tryParseConfig(siteConfig, isJson = false)) return true
+            if (!siteConfig.json.isNullOrBlank() && tryParseConfig(siteConfig, isJson = true)) return true
+            return false
+        }
+
+        private fun tryParseConfig(siteConfig: Config, isJson: Boolean): Boolean {
+            if (!ApiConfig.parseConfig(siteConfig, isJson)) return false
+            ApiConfig.api.init()
+            return true
         }
     }
 }

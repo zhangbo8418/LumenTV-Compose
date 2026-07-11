@@ -32,8 +32,9 @@ object SysVerUtil {
     fun getArchName(): String {
         val arch = SystemUtil.getOsInfo().arch.lowercase()
         return when {
+            "aarch" in arch || arch == "arm64" -> "arm64"
+            "arm" in arch -> "arm64"
             "x86" in arch || "x64" in arch || "amd64" in arch -> "x64"
-            "arm" in arch || "aarch" in arch -> "arm64"
             else -> "x64" // 默认 x64
         }
     }
@@ -46,6 +47,20 @@ object SysVerUtil {
         val osName = getOperatingSystem()
         val arch = SystemUtil.getOsInfo().arch
         return "${osName.name.lowercase()}-$arch"
+    }
+
+    /**
+     * 与 composeApp/src/desktopMain/appResources 目录命名对齐：
+     * windows-x64 / macos-x64 / macos-arm64 / linux-x64 / linux-arm64
+     */
+    fun getAppResourcesPlatform(): String {
+        val os = when (currentOs) {
+            OperatingSystem.Windows -> "windows"
+            OperatingSystem.MacOS -> "macos"
+            OperatingSystem.Linux -> "linux"
+            OperatingSystem.Unknown -> "unknown"
+        }
+        return "$os-${getArchName()}"
     }
 }
 

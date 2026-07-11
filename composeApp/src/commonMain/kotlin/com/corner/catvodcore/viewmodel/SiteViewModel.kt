@@ -8,14 +8,14 @@ import com.corner.catvodcore.bean.Vod.Companion.setVodFlags
 import com.corner.catvodcore.bean.Collect
 import com.corner.catvodcore.bean.Result
 import com.corner.catvodcore.bean.Url
+import com.corner.player.PlaySource
+import com.corner.util.download.DownloadUrlResolver
 import com.corner.catvodcore.bean.add
 import com.corner.catvodcore.bean.v
 import com.corner.catvodcore.config.ApiConfig
 import com.corner.util.net.Http
 import com.corner.util.json.Jsons
 import com.corner.util.net.Utils
-import com.corner.catvodcore.viewmodel.GlobalAppState.hideProgress
-import com.corner.catvodcore.viewmodel.GlobalAppState.showProgress
 import com.corner.util.copyAdd
 import com.corner.util.scope.createCoroutineScope
 import com.github.catvod.crawler.Spider
@@ -32,15 +32,8 @@ import java.util.concurrent.CopyOnWriteArrayList
 import com.corner.ui.nav.data.DialogState
 import com.corner.ui.nav.data.DialogState.changeDialogState
 import com.corner.ui.nav.data.ViewModelState
-import com.corner.ui.scene.SnackBar
-import com.corner.util.core.Constants
-import com.corner.util.m3u8.M3U8AdFilterInterceptor
-import com.corner.util.m3u8.M3U8Cache
-import com.corner.util.net.createDefaultOkHttpClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
-import okhttp3.Request
-import java.net.URI
 
 private val log = LoggerFactory.getLogger("SiteViewModel")
 
@@ -68,6 +61,12 @@ object SiteViewModel {
      */
     fun cancelAll() {
         supervisorJob.cancelChildren()
+    }
+
+    fun clearSpecialVideoLink() {
+        _state.update { it.copy(isSpecialVideoLink = false) }
+        changeDialogState(false)
+        DialogState.dismissPngDialog()
     }
 
     fun getSearchResultActive(): Collect {
@@ -173,6 +172,24 @@ object SiteViewModel {
      * @return Pair对象，第一个元素为Result对象，第二个元素表示是否为特殊链接
      */
     fun playerContent(key: String, flag: String, id: String): Result? {
+        if (key == "push_agent") {
+            return try {
+                _state.update { it.copy(isSpecialVideoLink = false) }
+                changeDialogState(false)
+                val result = Result().apply {
+                    url = Url().add(id)
+                    parse = 0
+                    this.flag = flag
+                }
+                PlaySource.fetch(result)
+                resolvePlayerUrl(result)
+                result
+            } catch (e: Exception) {
+                log.error("push_agent playerContent error: flag=$flag, id=$id", e)
+                null
+            }
+        }
+
         val site = ApiConfig.getSite(key) ?: return null
 
         return try {
@@ -187,10 +204,15 @@ object SiteViewModel {
             }
 
             rawResult.let { result ->
-                result.header = site.header
+                if (result.header.isNullOrEmpty()) {
+                    result.header = site.header
+                } else if (site.header.isNotEmpty()) {
+                    result.header = site.header + result.header!!
+                }
                 if (StringUtils.isNotBlank(flag)) result.flag = flag
                 if (site.type == 3) result.key = key // 仅类型3需要key
-                processVideoLink(result)
+                PlaySource.fetch(result)
+                resolvePlayerUrl(result)
                 return result
             }
 
@@ -257,265 +279,15 @@ object SiteViewModel {
     }
 
     /**
-     * 统一处理视频链接：包含「特殊链接检测」和「标准M3U8处理」
+     * 对齐 TV SiteApi.playerContent：仅做轻量 URL 归一化，不做同步 M3U8 下载/过滤。
      */
-    private fun processVideoLink(result: Result) {
-        val urlStr = result.url.v()
-        if (urlStr.isBlank()) return // URL为空直接跳过
-
-        // 0. 检测并处理磁力链接
-        if (com.corner.util.net.Utils.isDownloadLink(urlStr)) {
-            log.debug("发现磁力链接: $urlStr")
-            // 根据用户选择更新状态
-            if (!DialogState.userChoseOpenInBrowser) {
-                DialogState.showPngDialog(urlStr)
-                changeDialogState(true)
-            } else {
-                changeDialogState(false)
-            }
-            _state.update { it.copy(isSpecialVideoLink = true) }
-            return // 磁力链接无需后续处理
-        }
-
-        // 0.5. 处理需要解析的加密 URL（parse == 1）
-        if (result.parse == 1 && result.key != null) {
-            log.debug("检测到需要解析的 URL (parse=1): $urlStr")
-            // 将加密 URL 转换为本地代理 URL，由 Spider 的 proxyLocal 方法解密
-            val proxyUrl = "http://127.0.0.1:${com.corner.server.KtorD.getPort()}/proxy?do=${result.key}&url=${java.net.URLEncoder.encode(urlStr, "UTF-8")}"
-            result.url = Url().add(proxyUrl)
-            result.parse = 0 // 已转换为代理 URL，无需再次解析
-            log.debug("转换为代理 URL: $proxyUrl")
-            return // 代理 URL 无需后续处理
-        }
-
-        // 1. 检测并处理「包含.m3u8但不以.m3u8结尾」的特殊链接
-        // 注意：需要先去除查询参数再判断，避免将带参数的正常 m3u8 URL 误判为特殊链接
-        val urlWithoutQuery = urlStr.split("?").firstOrNull() ?: urlStr
-        val isSpecialLink = !urlStr.contains("proxy")
-                && urlStr.contains(".m3u8", ignoreCase = true)
-                && !urlWithoutQuery.trim().endsWith(".m3u8", ignoreCase = true)
-
-        if (isSpecialLink) {
-            log.debug("发现特殊链接(包含.m3u8但不以.m3u8结尾): $urlStr")
-            // 根据用户选择更新状态
-            if (!DialogState.userChoseOpenInBrowser) {
-                DialogState.showPngDialog(urlStr)
-                changeDialogState(true)
-            } else {
-                changeDialogState(false)
-            }
-            _state.update { it.copy(isSpecialVideoLink = true) }
-            return // 特殊链接无需后续M3U8处理
-        } else {
-            log.debug("未发现特殊链接:{}", urlStr)
-        }
-
-        // 2. 处理「标准M3U8链接」（以.m3u8结尾、不含proxy）
-        val isStandardM3u8 = urlWithoutQuery.endsWith(".m3u8", ignoreCase = true) && !urlStr.contains("proxy")
-        if (isStandardM3u8) {
-            result.url = processM3U8(result.url)
-            log.debug("Processed standard M3U8 link: $urlStr")
+    private fun resolvePlayerUrl(result: Result) {
+        val resolved = DownloadUrlResolver.resolve(result.url.v())
+        if (resolved.isNotBlank() && resolved != result.url.v()) {
+            result.url = Url().add(resolved)
+            log.debug("归一化播放地址: {}", resolved)
         }
     }
-
-
-    /**
-     * 处理M3U8文件，修正错误的扩展名、处理加密密钥、过滤广告链接并返回本地代理URL
-     *
-     * @param url 包含 M3U8 文件地址的 Url 对象
-     * @return 处理后的本地代理 Url 对象，若处理失败则返回原始 Url 对象
-     */
-    private fun processM3U8(url: Url, postMsg: Boolean = true): Url {
-        // 如果不是 .m3u8 文件，直接返回原始 Url 对象
-        if (!url.v().endsWith(".m3u8", ignoreCase = true)) {
-            return url
-        }
-        if (postMsg) {
-            SnackBar.postMsg("正在处理播放文件，请稍候...", type = SnackBar.MessageType.INFO)
-        }
-        try {
-            showProgress()
-            // 定义请求 M3U8 文件时需要携带的请求头
-
-            val interceptor = M3U8AdFilterInterceptor.Interceptor()
-
-            // 创建OkHttpClient并添加拦截器，使用统一的代理配置
-            val client = createDefaultOkHttpClient()
-                .newBuilder()
-                .addInterceptor(interceptor)
-                .build()
-
-            // 使用拦截器处理请求
-            val request = Request.Builder()
-                .url(url.v())
-                .headers(Constants.header.toHeaders())
-                .build()
-
-            val content = client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    log.error("下载 M3U8 文件失败，状态码: ${response.code}")
-                    return url
-                }
-                response.body.string()
-            }
-
-            //处理加密密钥（仅在存在密钥时处理）
-            val processedKeyContent = if (content.contains("#EXT-X-KEY:")) {
-                processEncryptionKeys(content, url.v())
-            } else {
-                content
-            }
-            //特殊链接检测（只匹配.png、.image和无后缀名链接）
-            val pattern = Regex(
-                // 匹配 http/https 协议
-                "https?://" +
-                        // 匹配域名部分（允许点号）
-                        "[^\\s\"'/?#]+" +
-                        // 匹配可选的路径部分（不包含点号）
-                        "(?:/[^\\s\"'.?#]*)*" +
-                        // 匹配三种情况：
-                        // 1. 以.png结尾
-                        // 2. 以.image结尾
-                        // 3. 以.jpg结尾
-                        // 4. 无后缀名（路径中无点号）
-                        "(?:" +
-                        "\\.(?:png|image|jpg)(?=[\\s\"'>]|$)" +  // 情况1和2
-                        "|" +
-                        "(?<!\\.)(?=[\\s\"'>]|$)" +         // 情况3：无后缀名（前面无点号）
-                        ")",
-                RegexOption.IGNORE_CASE
-            )
-
-            if (pattern.containsMatchIn(processedKeyContent)) {
-                log.debug("<process>检测到特殊链接，弹出弹窗")
-                if (!DialogState.userChoseOpenInBrowser) {
-                    DialogState.showPngDialog(url.v())
-                    changeDialogState(true)
-                } else {
-                    changeDialogState(false)
-                }
-                _state.update { it.copy(isSpecialVideoLink = true) }
-                return url
-            }
-
-            // 3. 处理嵌套M3U8
-            val processedNestedContent = Regex("(?m)^(?!#).*\\.m3u8$").replace(processedKeyContent) { match ->
-                val nestedUrl = match.value.let {
-                    if (it.startsWith("http")) it else "${url.v().substringBeforeLast("/")}/$it"
-                }
-                processM3U8(Url().add(nestedUrl), false).v() // 递归处理
-            }
-
-            // 4. 将相对路径的 .ts 片段转换为完整 URL（不代理，让 HLS.js 直接访问）
-            val processedTsContent = convertRelativeTsToAbsolute(processedNestedContent, url.v())
-
-            // 缓存内容并返回代理URL
-            val cacheId = M3U8Cache.put(processedTsContent)
-            log.debug("缓存M3U8文件成功，: http://127.0.0.1:9978/proxy/cached_m3u8?id=$cacheId")
-            return Url().add("http://127.0.0.1:9978/proxy/cached_m3u8?id=$cacheId")
-        } catch (e: Exception) {
-            log.error("处理 M3U8 文件失败", e)
-            return url
-        } finally {
-            hideProgress()
-        }
-    }
-
-    /**
-     * 处理M3U8中的加密密钥
-     */
-    private fun processEncryptionKeys(content: String, baseUrl: String): String {
-        log.debug("开始处理密钥")
-        val keyRegex = """#EXT-X-KEY:METHOD=([^,]+),URI="([^"]+)"(,IV=([^"]+))?""".toRegex()
-
-        return keyRegex.replace(content) { match ->
-            val (method, uri, _, iv) = match.destructured
-            try {
-                val keyUrl = when {
-                    uri.startsWith("http") -> uri
-                    uri.startsWith("/") -> {
-                        val baseUri = URI(baseUrl)
-                        "${baseUri.scheme}://${baseUri.host}$uri"
-                    }
-
-                    else -> {
-                        // 处理相对路径
-                        val basePath = baseUrl.substringBeforeLast("/")
-                        "$basePath/$uri".replace(Regex("(?<!:)//"), "/")
-                    }
-                }
-                val cacheId = downloadAndStoreKey(keyUrl)
-
-                "#EXT-X-KEY:METHOD=$method,URI=\"$cacheId\"" +
-                        (if (iv.isNotEmpty()) ",IV=$iv" else "")
-            } catch (e: Exception) {
-                log.error("密钥处理失败，保留原始标签", e)
-                match.value
-            }
-        }
-    }
-
-    /**
-     * 下载并存储加密密钥
-     */
-    private fun downloadAndStoreKey(keyUrl: String): String {
-        // 使用带代理配置的HTTP客户端
-        val client = createDefaultOkHttpClient()
-        val request = Request.Builder().url(keyUrl).build()
-
-        val keyData = client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("密钥下载失败")
-            response.body.bytes()
-        }
-
-        // 将密钥数据存入M3U8缓存
-        val cacheId = M3U8Cache.put(String(keyData))
-
-        // 返回通过本地服务器访问的缓存URL
-        return "http://127.0.0.1:9978/proxy/cached_m3u8?id=$cacheId"
-    }
-
-    /**
-     * 将 m3u8 文件中的相对路径 .ts 片段转换为完整 URL
-     * 注意：不代理 .ts 文件，直接返回原始完整 URL，让 HLS.js 直接访问
-     * @param content m3u8 文件内容
-     * @param baseUrl m3u8 文件的基准 URL
-     * @return 处理后的 m3u8 内容
-     */
-    private fun convertRelativeTsToAbsolute(content: String, baseUrl: String): String {
-        // 创建基准 URI，用于解析相对路径
-        val baseUri = try {
-            java.net.URI(baseUrl)
-        } catch (e: Exception) {
-            log.error("无效的基准 URL: $baseUrl", e)
-            return content // 如果基准 URL 无效，返回原始内容
-        }
-        
-        // 匹配所有非注释行且包含 .ts 的行
-        return content.lines().joinToString("\n") { line ->
-            when {
-                // 跳过注释行和空行
-                line.startsWith("#") || line.isBlank() -> line
-                // 已经是完整 URL，不需要处理
-                line.startsWith("http") -> line
-                // 处理相对路径的 .ts 文件，转换为完整 URL
-                line.contains(".ts", ignoreCase = true) -> {
-                    try {
-                        // 使用 URI.resolve() 正确解析相对路径
-                        val resolvedUri = baseUri.resolve(line)
-                        val fullUrl = resolvedUri.toString()
-                        log.debug("转换相对路径 .ts: $line -> $fullUrl")
-                        fullUrl // 返回完整的原始 URL，不代理
-                    } catch (e: Exception) {
-                        log.error("URL 解析失败: line=$line, baseUrl=$baseUrl", e)
-                        line // 解析失败时保留原始行
-                    }
-                }
-                else -> line
-            }
-        }
-    }
-
 
     /**
      * 根据站点和关键词进行搜索操作，支持快速搜索模式

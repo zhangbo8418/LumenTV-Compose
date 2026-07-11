@@ -54,6 +54,12 @@ interface HistoryDao {
     @Query("UPDATE History SET opening = :opening, ending = :ending where `key` = :key")
     suspend fun updateOpeningEnding(opening: Long, ending: Long, key: String)
 
+    @Query("SELECT * FROM History WHERE vodName = :name AND cid = :cid")
+    suspend fun findByName(name: String, cid: Long): List<History>
+
+    @Query("SELECT * FROM History where cid = :cId order by createTime desc")
+    suspend fun findAllOnce(cId: Long): List<History>
+
     @Update
     suspend fun update(en: History)
 

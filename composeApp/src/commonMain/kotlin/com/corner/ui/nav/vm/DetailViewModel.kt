@@ -10,10 +10,20 @@ import com.corner.util.settings.getPlayerSetting
 import com.corner.catvodcore.bean.Vod
 import com.corner.catvodcore.bean.Vod.Companion.getPage
 import com.corner.util.core.playResultIsEmpty
+import com.corner.util.core.needParse
+import com.corner.util.core.isUseParse
 import com.corner.util.core.detailIsEmpty
+import com.corner.catvodcore.push.PushService
+import com.corner.catvodcore.parse.ParseHelper
+import com.corner.catvodcore.keep.VodKeep
+import com.corner.server.PlaybackControl
+import com.corner.server.PlaybackMediaState
+import com.corner.server.ServerEvent
+import com.corner.util.download.DownloadUrlResolver
 import com.corner.util.core.buildUpdatedDetail
 import com.corner.util.core.updateFlagActivationStates
 import com.corner.catvodcore.bean.*
+import com.corner.catvodcore.loader.PlatformSpiderLoader
 import com.corner.catvodcore.config.ApiConfig
 import com.corner.util.net.Utils
 import com.corner.catvodcore.viewmodel.DetailFromPage
@@ -46,6 +56,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import org.apache.commons.lang3.StringUtils
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
 
 class DetailViewModel : BaseViewModel() {
@@ -78,8 +89,24 @@ class DetailViewModel : BaseViewModel() {
     // ==================== 业务状态 ====================
     @Volatile
     private var launched = false
+    @Volatile
+    internal var suppressAutoLineSwitch = false
     private var currentSiteKey = MutableStateFlow("")
     private val jobList = mutableListOf<Job>()
+    private var flagSwitchJob: Job? = null
+    private var playJob: Job? = null
+    private var playbackJob: Job? = null
+    private var loadDetailJob: Job? = null
+    private var quickSearchJob: Job? = null
+    private val loadDetailSession = AtomicInteger(0)
+    private val playerContentTaskId = AtomicInteger(0)
+    /** 本集自动换线时已失败的线路，避免末线无法回退、以及死循环 */
+    private val failedFlagsForEpisode = mutableSetOf<String>()
+    @Volatile
+    private var pendingPlayRequest: VodPlayRequest? = null
+    @Volatile
+    private var fetchingPlayKey: String? = null
+    private val playFetchLock = Any()
     private var fromSearchLoadJob: Job = Job()
     var currentSelectedEpNumber by mutableStateOf(1)
     val currentEpisodeIndex: Int get() = currentSelectedEpNumber
@@ -165,6 +192,219 @@ class DetailViewModel : BaseViewModel() {
 
     // ==================== 工具方法 ====================
 
+    /** 对齐 TV VodPlayRequest */
+    private data class VodPlayRequest(
+        val siteKey: String,
+        val flag: String,
+        val episodeUrl: String,
+        val episodeName: String,
+    ) {
+        fun matches(siteKey: String, flag: Flag, episode: Episode): Boolean {
+            return this.siteKey == siteKey &&
+                this.flag == (flag.flag ?: "") &&
+                episodeUrl == episode.url
+        }
+
+        fun accepts(result: Result): Boolean {
+            val resultFlag = result.flag?.takeIf { it.isNotBlank() } ?: return true
+            return flag == resultFlag
+        }
+    }
+
+    private fun cancelPlayerContentRequest(keepJob: Job? = null): Int {
+        playJob?.takeIf { it != keepJob }?.cancel()
+        return playerContentTaskId.incrementAndGet()
+    }
+
+    /** 换站点等场景：取消拉地址 + 播放加载，可选回收 Py */
+    private fun invalidatePlaybackFully(recyclePy: Boolean = false, keepJob: Job? = null): Int {
+        playJob?.takeIf { it != keepJob }?.cancel()
+        playbackJob?.cancel()
+        if (recyclePy) {
+            PlatformSpiderLoader.recycleRecentPy()
+        }
+        return playerContentTaskId.incrementAndGet()
+    }
+
+    /** 对齐 TV ViewModelTaskRunner：仅用于 playerContent 回调是否仍有效 */
+    private fun isPlayerContentActive(taskId: Int): Boolean = playerContentTaskId.get() == taskId
+
+    /** 对齐 TV cannotApply：仅校验 pending 请求 vs 当前集（拉地址后、解析前） */
+    private fun cannotApplyRequest(): Boolean = cannotApply(result = null)
+
+    /** 对齐 TV cannotApply：pending 请求 vs 当前选中集 + result.flag */
+    private fun cannotApply(result: Result? = null): Boolean {
+        val request = pendingPlayRequest
+        if (request == null) {
+            log.info("丢弃播放结果: pending 请求为空")
+            return true
+        }
+        val detail = _state.value.detail
+        val currentEp = _state.value.currentEp
+        if (currentEp == null) {
+            log.info("丢弃播放结果: 当前集为空")
+            return true
+        }
+        if (!request.matches(detail.site?.key ?: "", detail.currentFlag, currentEp)) {
+            log.info(
+                "丢弃播放结果: pending={} current={}",
+                request.episodeName,
+                currentEp.name,
+            )
+            return true
+        }
+        if (result != null && !request.accepts(result)) {
+            log.info(
+                "丢弃播放结果: flag 不匹配 result={} request={}",
+                result.flag,
+                request.flag,
+            )
+            return true
+        }
+        return false
+    }
+
+    /** 供 VLC loadURL 等起播前校验：pending 请求是否仍对应当前集 */
+    internal fun shouldApplyPlayback(): Boolean = !cannotApplyRequest()
+
+    /** 对齐 TV playbackError(msg) → VodFallbackPolicy.playbackError() */
+    fun playbackError(msg: String? = null) {
+        if (msg != null && (msg.contains("cancel", ignoreCase = true) || msg.contains("已取消"))) {
+            log.debug("跳过 cancellation 触发的 playbackError: {}", msg)
+            return
+        }
+        if (suppressAutoLineSwitch) {
+            log.debug("正在切换线路，跳过 playbackError")
+            return
+        }
+        if (playJob?.isActive == true && _state.value.isBuffering) {
+            log.debug("正在拉取播放地址，跳过 playbackError")
+            return
+        }
+        log.warn("playbackError: {}", msg ?: "播放失败")
+        scope.launch {
+            stopPlaybackForRefresh()
+            _state.update { it.copy(isBuffering = false, isLoading = false) }
+            fallbackToNextLineOrSource()
+        }
+    }
+
+    private fun isSiteChangeable(): Boolean =
+        _state.value.detail.site?.isChangeable() == true
+
+    /** 对齐 TV VodFallbackPolicy.fallbackToNextLineOrSource() */
+    private fun fallbackToNextLineOrSource() {
+        // 先尝试同站换线（即使 site.changeable=false，多线路时仍应自动切）
+        if (fallbackToNextLine()) return
+        if (!isSiteChangeable()) {
+            log.warn("无可用线路且站点不可换源，playbackError 仅提示失败")
+            SnackBar.postMsg("播放失败，请手动切换线路", type = SnackBar.MessageType.ERROR)
+            return
+        }
+        log.info("无下一线路，尝试换源")
+        fallbackToNextSource()
+    }
+
+    /** 对齐 TV fallbackToNextLine() → selectFlag(next)；末线则从头绕回，跳过已失败线路 */
+    private fun fallbackToNextLine(): Boolean {
+        val flags = _state.value.detail.vodFlags
+        if (flags.size <= 1) return false
+        val currentIndex = flags.indexOfFirst { it.activated }.coerceAtLeast(0)
+        val currentFlag = flags.getOrNull(currentIndex)?.flag
+        if (!currentFlag.isNullOrBlank()) {
+            failedFlagsForEpisode.add(currentFlag)
+        }
+        for (offset in 1..flags.size) {
+            val idx = (currentIndex + offset) % flags.size
+            val candidate = flags[idx]
+            val name = candidate.flag.orEmpty()
+            if (name.isNotBlank() && name in failedFlagsForEpisode) continue
+            SnackBar.postMsg("切换线路[${candidate.flag}]", type = SnackBar.MessageType.INFO)
+            selectFlagForPlayback(candidate, fromFallback = true)
+            return true
+        }
+        return false
+    }
+
+    private fun fallbackToNextSource() {
+        val detail = _state.value.detail.copy()
+        log.info("没有更多线路，尝试快速搜索换源")
+        handleEmptyFlagWithQuickSearch(detail)
+    }
+
+    /**
+     * 对齐 TV selectFlag → seamless → refresh。
+     * fromFallback=true 时即使同 flag 也会继续（fallback 已选下一线路）。
+     */
+    private fun selectFlagForPlayback(selectedFlag: Flag, fromFallback: Boolean = false) {
+        flagSwitchJob?.cancel()
+        flagSwitchJob = scope.launch {
+            suppressAutoLineSwitch = true
+            try {
+                if (!fromFallback && selectedFlag.activated) {
+                    log.debug("线路已选中，跳过: {}", selectedFlag.flag)
+                    return@launch
+                }
+
+                val detail = _state.value.detail.copy()
+                detail.vodFlags.forEach { it.activated = it.flag == selectedFlag.flag }
+                detail.currentFlag = selectedFlag
+                detail.subEpisode = selectedFlag.episodes.getPage(detail.currentTabIndex).toMutableList()
+
+                _currentFlagName.value = selectedFlag.flag.toString()
+                controller.doWithHistory { it.copy(vodFlag = selectedFlag.flag) }
+                GlobalAppState.chooseVod.value = detail.copy()
+                _state.update { it.copy(detail = detail, isLoading = false, isBuffering = false) }
+
+                saveCurrentHistory()
+                // 换线拉地址挂到 playJob，便于换集时 cancel 打断
+                playJob = coroutineContext[Job]
+                val taskId = cancelPlayerContentRequest(keepJob = coroutineContext[Job])
+                controller.invalidatePendingLoads()
+                // 仅在 stop 期间抑制 VLC finished 误换线；拉地址阶段要允许空结果继续换线
+                stopPlaybackForRefresh()
+                suppressAutoLineSwitch = false
+
+                if (!isPlayerContentActive(taskId)) return@launch
+                playAfterFlagSwitch(taskId, detail)
+            } finally {
+                suppressAutoLineSwitch = false
+            }
+        }
+    }
+
+    /** 对齐 TV refresh() 前 saveCurrentHistory() */
+    private fun saveCurrentHistory() {
+        val history = controller.history.value ?: return
+        scope.launch {
+            try {
+                historyService.updateHistory(history)
+            } catch (e: Exception) {
+                log.warn("保存播放历史失败: {}", e.message)
+            }
+        }
+    }
+
+    /**
+     * 对齐 TV stopPlaybackForRefresh()：stop + clear + 作废 VLC 排队 loadURL。
+     */
+    private suspend fun stopPlaybackForRefresh() {
+        PlaybackMediaState.playing = false
+        controller.stopForRefreshAndAwait()
+    }
+
+    /**
+     * 对齐 TV refresh() → requestPlayer()：异步拉地址并播放。
+     */
+    private fun refreshPlayback(detail: Vod, ep: Episode) {
+        saveCurrentHistory()
+        requestPlayer(detail, ep, recyclePy = false)
+    }
+
+    private fun requestPlayer(detail: Vod, ep: Episode, recyclePy: Boolean) {
+        startPlay(detail, ep, recyclePy)
+    }
+
     /**
      * 统一错误处理
      */
@@ -199,6 +439,7 @@ class DetailViewModel : BaseViewModel() {
      */
     override fun onCleared() {
         super.onCleared()
+        clearPlaybackControl()
         log.debug("DetailViewModel onCleared - 开始清理")
         supervisor.cancel()
         log.debug("DetailViewModel onCleared - 清理完成")
@@ -211,6 +452,8 @@ class DetailViewModel : BaseViewModel() {
      * 加载详情页并根据不同来源执行相应操作
      */
     suspend fun load() {
+        registerPlaybackControl()
+        observeRemoteSubtitle()
         if (vmPlayerType.first() == PlayerType.Innie.id) {
             lifecycleManager.initializeSync()
         }
@@ -244,6 +487,10 @@ class DetailViewModel : BaseViewModel() {
      * 从非搜索页加载详情
      */
     private suspend fun loadFromNonSearch(chooseVod: Vod) {
+        if (PushService.isPushSite(chooseVod.site?.key)) {
+            loadPush(chooseVod)
+            return
+        }
         val dt = fetchDetailContent(chooseVod)
 
         if (chooseVod.vodId.isBlank()) return
@@ -251,7 +498,76 @@ class DetailViewModel : BaseViewModel() {
             quickSearch()
         } else {
             loadVodDetail(dt)
-            startPlay(_state.value.detail)
+            val detail = _state.value.detail
+            val ep = detail.subEpisode.find { it.activated }
+                ?: detail.currentFlag.episodes.firstOrNull { it.activated }
+                ?: Episode.create("", "")
+            startPlay(detail, ep)
+        }
+    }
+
+    private suspend fun loadPush(vod: Vod) {
+        val url = DownloadUrlResolver.resolve(PushService.extractUrl(vod.vodId))
+        val displayName = vod.vodName?.takeIf { it.isNotBlank() } ?: PushService.displayName(url)
+        val episode = Episode.create(displayName, url)
+        val detail = vod.copy(
+            vodId = url,
+            vodName = displayName,
+            site = Site.get(PushService.SITE_KEY, "推送"),
+            subEpisode = mutableListOf(episode),
+        )
+        _state.update { it.copy(detail = detail) }
+        currentSiteKey.value = PushService.SITE_KEY
+        updateEpisodeActivation(episode)
+        startPlay(detail, episode)
+    }
+
+    private fun registerPlaybackControl() {
+        PlaybackControl.play = { controller.play() }
+        PlaybackControl.pause = { controller.pause() }
+        PlaybackControl.stop = {
+            scope.launch {
+                controller.stop()
+                PlaybackMediaState.playing = false
+            }
+        }
+        PlaybackControl.next = {
+            getNextEpisodeUrl()?.let { playEp(_state.value.detail, Episode.create("", it)) }
+        }
+        PlaybackControl.prev = {
+            SnackBar.postMsg("上一集请使用播放器控制", type = SnackBar.MessageType.INFO)
+        }
+    }
+
+    private fun clearPlaybackControl() {
+        PlaybackControl.play = null
+        PlaybackControl.pause = null
+        PlaybackControl.stop = null
+        PlaybackControl.next = null
+        PlaybackControl.prev = null
+    }
+
+    fun selectSubtitle(url: String) {
+        _state.update { it.copy(selectedSubUrl = url) }
+        PlaybackMediaState.subtitleUrl = url
+        controller.setSubtitleUrl(url)
+        controller.applySubtitle(url)
+        SnackBar.postMsg("已选择字幕", type = SnackBar.MessageType.INFO)
+    }
+
+    private fun observeRemoteSubtitle() {
+        scope.launch {
+            ServerEvent.subtitlePath.collect { path ->
+                if (path.isBlank()) return@collect
+                val url = when {
+                    path.startsWith("http", ignoreCase = true) -> path
+                    path.startsWith("file", ignoreCase = true) -> java.io.File(
+                        path.removePrefix("file://").removePrefix("file:/")
+                    ).takeIf { it.exists() }?.toURI()?.toString() ?: path
+                    else -> path
+                }
+                selectSubtitle(url)
+            }
         }
     }
 
@@ -303,8 +619,12 @@ class DetailViewModel : BaseViewModel() {
      */
     private fun loadChooseVod(): Vod {
         val chooseVod = getChooseVod()
+        GlobalAppState.consumeCastResume()?.let { castHistory ->
+            controller.setControllerHistory(castHistory)
+        }
         _state.update { it.copy(detail = chooseVod) }
         currentSiteKey.value = chooseVod.site?.key ?: ""
+        refreshKeepStatus(chooseVod)
         return chooseVod
     }
 
@@ -345,6 +665,8 @@ class DetailViewModel : BaseViewModel() {
         detail.site = getChooseVod().site
         _state.update { it.copy(detail = detail) }
         _currentFlagName.value = detail.currentFlag.flag.toString()
+        refreshKeepStatus(detail)
+        scope.launch { VodKeep.update(detail) }
     }
 
     // ==================== 快速搜索功能 ====================
@@ -354,11 +676,13 @@ class DetailViewModel : BaseViewModel() {
      * @param onComplete 搜索完成后的回调函数
      */
     fun quickSearch(onComplete: ((List<Vod>) -> Unit)? = null) {
+        quickSearchJob?.cancel()
+        loadDetailJob?.cancel()
         resetQuickSearchState()
 
-        searchScope.launch {
+        quickSearchJob = searchScope.launch {
             _state.update { it.copy(isLoading = true, isBuffering = false) }
-            val quickSearchSites = ApiConfig.api.sites.filter { it.changeable == 1 }.shuffled()
+            val quickSearchSites = ApiConfig.api.sites.filter { it.changeable == 1 && !it.isHide() }.shuffled()
             val totalSites = quickSearchSites.size
 
             if (totalSites == 0) {
@@ -366,13 +690,17 @@ class DetailViewModel : BaseViewModel() {
                 return@launch
             }
 
-            log.debug("开始执行快搜 sites:{}", quickSearchSites.map { it.name })
+            log.info("开始执行快搜，站点数: {}", totalSites)
             postQuickSearchProgress(0, totalSites)
 
-            executeSearchTasks(quickSearchSites, totalSites, onComplete)
-        }.invokeOnCompletion {
-            _state.update { it.copy(isLoading = false) }
-            onComplete?.invoke(_state.value.quickSearchResult)
+            try {
+                executeSearchTasks(quickSearchSites, totalSites, onComplete)
+            } finally {
+                if (isActive) {
+                    _state.update { it.copy(isLoading = false) }
+                }
+                onComplete?.invoke(_state.value.quickSearchResult)
+            }
         }
     }
 
@@ -462,7 +790,7 @@ class DetailViewModel : BaseViewModel() {
             log.error("quickSearch 协程执行异常: {}", throwable.message)
         }
 
-        val currentSiteName = ApiConfig.api.sites.filter { it.changeable == 1 }
+        val currentSiteName = ApiConfig.api.sites.filter { it.changeable == 1 && !it.isHide() }
             .getOrNull(count - 1)?.name ?: "完成"
         postQuickSearchProgress(count, totalSites, currentSiteName)
 
@@ -480,11 +808,15 @@ class DetailViewModel : BaseViewModel() {
                             launched = true
                             val firstResult = _state.value.quickSearchResult.firstOrNull()
                             if (firstResult != null) {
-                                loadDetail(firstResult)
+                                loadDetailInternal(loadDetailSession.incrementAndGet(), firstResult)
                             } else {
                                 launched = false
                                 hasLoadedDetail.set(false)
                             }
+                        } catch (e: CancellationException) {
+                            launched = false
+                            hasLoadedDetail.set(false)
+                            throw e
                         } catch (e: Exception) {
                             log.error("加载详情时发生异常: {}", e.message)
                             launched = false
@@ -546,17 +878,33 @@ class DetailViewModel : BaseViewModel() {
     /**
      * 加载快速搜索出的视频的详细信息
      */
-    suspend fun loadDetail(vod: Vod) {
-        log.info("加载详情 <${vod.vodName}> <${vod.vodId}> site:<${vod.site}>")
+    fun loadDetail(vod: Vod) {
+        loadDetailJob?.cancel()
+        invalidatePlaybackFully(recyclePy = true)
+        controller.prepareForEpisodeSwitch()
+        val session = loadDetailSession.incrementAndGet()
+        loadDetailJob = scope.launch {
+            loadDetailInternal(session, vod)
+        }
+    }
+
+    private suspend fun loadDetailInternal(session: Int, vod: Vod) {
+        if (loadDetailSession.get() != session) return
+
+        log.info("加载详情 <${vod.vodName}> <${vod.vodId}> site:<${vod.site?.name}>")
 
         try {
-            _state.update { it.copy(isLoading = true) }
+            _state.update { it.copy(isLoading = true, isBuffering = false) }
             val siteKey = vod.site?.key ?: run {
                 handleSiteEmpty()
                 return
             }
 
-            val dt = fetchDetailWithRetry(siteKey, vod.vodId)
+            val dt = withTimeout(45_000) {
+                fetchDetailWithRetry(siteKey, vod.vodId)
+            }
+            if (loadDetailSession.get() != session) return
+
             if (dt == null || dt.detailIsEmpty()) {
                 handleDetailLoadFailure(vod)
                 return
@@ -568,13 +916,27 @@ class DetailViewModel : BaseViewModel() {
                 return
             }
 
-            // 成功加载详情
             onDetailLoadSuccess(first, vod)
+        } catch (e: CancellationException) {
+            log.info("加载详情已取消: {}", vod.vodName)
+            throw e
+        } catch (e: TimeoutCancellationException) {
+            if (loadDetailSession.get() != session) return
+            log.warn("加载详情超时: {}", vod.site?.name)
+            SnackBar.postMsg("加载详情超时: ${vod.site?.name}", type = SnackBar.MessageType.WARNING)
+            _state.update { it.copy(isLoading = false) }
+            if (incrementAndCheckFailures()) {
+                nextSite(vod)
+            }
         } catch (e: Exception) {
+            if (loadDetailSession.get() != session) return
             handleError("加载详情时发生未预期异常: ${e.message}", e)
             _state.update { it.copy(isLoading = false) }
         } finally {
             launched = false
+            if (loadDetailSession.get() == session) {
+                _state.update { it.copy(isLoading = false) }
+            }
         }
     }
 
@@ -636,8 +998,6 @@ class DetailViewModel : BaseViewModel() {
      * 尝试从快速搜索结果中加载下一个视频的详情
      */
     fun nextSite(lastVod: Vod?) {
-        _state.update { it.copy(isLoading = true) }
-
         if (_state.value.quickSearchResult.isEmpty()) {
             log.warn("快搜结果为空,无法加载下一个视频")
             _state.update { it.copy(isLoading = false) }
@@ -651,12 +1011,12 @@ class DetailViewModel : BaseViewModel() {
             log.debug("remove last vod result:$remove")
         }
 
-        _state.update { it.copy(quickSearchResult = list, isLoading = false) }
+        _state.update { it.copy(quickSearchResult = list) }
 
         if (_state.value.quickSearchResult.isNotEmpty()) {
-            searchScope.launch {
-                loadDetail(_state.value.quickSearchResult[0])
-            }
+            loadDetail(_state.value.quickSearchResult[0])
+        } else {
+            _state.update { it.copy(isLoading = false) }
         }
     }
 
@@ -670,22 +1030,52 @@ class DetailViewModel : BaseViewModel() {
 
         updateDetailState(vod)
         setupDefaultEpisode(vod)
+        _state.update { it.copy(isLoading = false) }
 
         scope.launch {
             log.info("开始播放视频: ${vod.vodName}")
-            val effectiveEpisode = vod.vodFlags.first().episodes.firstOrNull() ?: Episode.create("", "")
+            val effectiveEpisode = vod.vodFlags.firstOrNull()?.episodes?.firstOrNull()
+                ?: Episode.create("", "")
             startPlay(vod, effectiveEpisode)
-        }.invokeOnCompletion { _state.update { it.copy(isLoading = false) } }
+        }
     }
 
     private fun updateDetailState(vod: Vod) {
         _state.update {
             it.copy(
                 detail = vod.copy(
-                    subEpisode = vod.vodFlags.first().episodes.getPage(vod.currentTabIndex).toMutableList()
+                    subEpisode = vod.vodFlags.firstOrNull()?.episodes
+                        ?.getPage(vod.currentTabIndex)?.toMutableList()
+                        ?: mutableListOf()
                 ),
-                isLoading = true
+                isLoading = false
             )
+        }
+        refreshKeepStatus(vod)
+        scope.launch { VodKeep.update(vod) }
+    }
+
+    fun toggleKeep() {
+        val detail = _state.value.detail
+        if (detail.vodId.isBlank()) return
+        scope.launch {
+            val added = VodKeep.toggle(detail)
+            _state.update { it.copy(isKept = added) }
+            SnackBar.postMsg(
+                if (added) "已加入收藏" else "已取消收藏",
+                type = SnackBar.MessageType.INFO
+            )
+        }
+    }
+
+    private fun refreshKeepStatus(detail: Vod) {
+        if (detail.vodId.isBlank()) {
+            _state.update { it.copy(isKept = false) }
+            return
+        }
+        scope.launch {
+            val kept = VodKeep.isKept(detail)
+            _state.update { it.copy(isKept = kept) }
         }
     }
 
@@ -728,7 +1118,9 @@ class DetailViewModel : BaseViewModel() {
                     showProgress()
                 }
 
-                performCleanup(releaseController)
+                withTimeoutOrNull(5_000L) {
+                    performCleanup(releaseController)
+                } ?: log.warn("详情页资源清理超时，强制继续")
                 resetStateAndResources()
 
                 withContext(Dispatchers.Swing) {
@@ -739,6 +1131,7 @@ class DetailViewModel : BaseViewModel() {
             } finally {
                 progressJob?.cancel()
                 hideProgress()
+                _state.update { it.copy(isLoading = false, isBuffering = false) }
             }
         }
     }
@@ -746,8 +1139,13 @@ class DetailViewModel : BaseViewModel() {
     private suspend fun performCleanup(releaseController: Boolean) {
         log.debug("<清理资源>当前播放器类型:${vmPlayerType.first()}，手动放弃清理播放器资源:{${!releaseController}}")
 
-        if (releaseController && vmPlayerType.first() == PlayerType.Innie.id) {
+        if (vmPlayerType.first() != PlayerType.Innie.id) return
+
+        if (releaseController) {
             cleanupPlayerLifecycle()
+        } else {
+            // 对齐 TV：离开详情页仅 stop，不销毁 ExoPlayer/VLC 实例
+            stopPlaybackForRefresh()
         }
     }
 
@@ -766,6 +1164,9 @@ class DetailViewModel : BaseViewModel() {
     }
 
     private fun resetStateAndResources() {
+        loadDetailJob?.cancel()
+        quickSearchJob?.cancel()
+        playbackJob?.cancel()
         jobList.forEach {
             try {
                 it.cancel("detail clear")
@@ -793,19 +1194,29 @@ class DetailViewModel : BaseViewModel() {
     fun inniePlay(result: Result?) {
         if (result == null || result.playResultIsEmpty()) {
             SnackBar.postMsg("加载内容失败，尝试切换线路", type = SnackBar.MessageType.WARNING)
-            nextFlag()
+            playbackError("加载内容失败")
             return
         }
 
         scope.launch {
             try {
-                updatePlaybackState(result)
-                prepareForPlayback(result)
+                val playable = resolvePlayResult(result) ?: run {
+                    SnackBar.postMsg("解析播放地址失败，尝试切换线路", type = SnackBar.MessageType.WARNING)
+                    playbackError("解析播放地址失败")
+                    return@launch
+                }
+                updatePlaybackState(playable)
+                prepareForPlayback(playable)
             } catch (e: Exception) {
                 handleError("播放器初始化失败: ${e.message}", e)
                 _state.update { it.copy() }
             }
         }
+    }
+
+    private suspend fun resolvePlayResult(result: Result): Result? {
+        if (!result.needParse() && !result.isUseParse()) return result
+        return ParseHelper.parseVod(result, useParse = result.isUseParse())
     }
 
     private fun updatePlaybackState(result: Result) {
@@ -921,9 +1332,12 @@ class DetailViewModel : BaseViewModel() {
         return true
     }
 
-    private fun loadVideoUrl(result: Result): Boolean {
+    private suspend fun loadVideoUrl(result: Result): Boolean {
         return try {
-            controller.load(result.url.v())
+            controller.loadURL(
+                result.url.v(),
+                PlayerStrategyConfig.INNIE_LOAD_URL_TIMEOUT_MS
+            )
             true
         } catch (e: Exception) {
             handleError("加载播放链接失败: ${e.message}", e)
@@ -961,21 +1375,160 @@ class DetailViewModel : BaseViewModel() {
      * 播放指定视频的指定剧集
      */
     private fun playEp(detail: Vod, ep: Episode) {
-        _state.update { it.copy(isBuffering = true) }
-        onUserSelectEpisode()
+        refreshPlayback(detail, ep)
+    }
 
-        val result = fetchPlayResult(detail, ep)
-        currentSelectedEpNumber = ep.number
+    /** 对齐 TV VodPlayRequest.id = episode.getUrl() */
+    private fun buildPlayKey(detail: Vod, ep: Episode): String {
+        return "${detail.site?.key}|${ep.url}"
+    }
 
-        if (handleSpecialLink(ep, result)) return
+    private suspend fun requestPlayerAndPlay(taskId: Int, detail: Vod, ep: Episode) {
+        if (!isPlayerContentActive(taskId)) return
+        updateCurrentEpisodeState(detail, ep)
+        pendingPlayRequest = VodPlayRequest(
+            siteKey = detail.site?.key ?: "",
+            flag = detail.currentFlag.flag ?: "",
+            episodeUrl = ep.url,
+            episodeName = ep.name,
+        )
+        log.info(
+            "requestPlayer: ep={}, taskId={}, generation={}",
+            ep.name,
+            taskId,
+            controller.currentLoadGeneration(),
+        )
+        playEpInternal(taskId, detail, ep)
+    }
 
-        if (result == null || result.playResultIsEmpty()) {
-            handleEmptyPlayResult()
-            return
+    private suspend fun playEpInternal(taskId: Int, detail: Vod, ep: Episode) {
+        if (!isPlayerContentActive(taskId)) return
+
+        val playKey = buildPlayKey(detail, ep)
+        synchronized(playFetchLock) {
+            if (fetchingPlayKey == playKey) {
+                log.info("跳过重复拉地址: ep={}", ep.name)
+                return
+            }
+            fetchingPlayKey = playKey
         }
 
-        updatePlayState(result, ep)
-        executePlaybackByType(result, ep)
+        _state.update { it.copy(isBuffering = true) }
+        onUserSelectEpisode()
+        currentSelectedEpNumber = ep.number
+
+        try {
+            log.info("playEpInternal 开始获取播放地址: ep={}, flag={}", ep.name, detail.currentFlag.flag)
+            var result = withTimeout(60_000) {
+                withContext(Dispatchers.IO) {
+                    ensureActive()
+                    fetchPlayResult(detail, ep)
+                }
+            }
+            log.info("playEpInternal 获取播放地址完成: ep={}", ep.name)
+            if (!isPlayerContentActive(taskId) || cannotApplyRequest()) return
+
+            if (handleSpecialLink(ep, result)) return
+
+            if (result == null || result.playResultIsEmpty()) {
+                handleEmptyPlayResult()
+                return
+            }
+
+            result = withContext(Dispatchers.IO) {
+                com.corner.util.m3u8.M3u8PlayUrlResolver.resolveForPlayback(result)
+            }
+            // OkHttp 阻塞不会被 cancel 打断，处理后必须再校验，否则会污染 currentEp
+            if (!isPlayerContentActive(taskId) || cannotApplyRequest()) {
+                log.info("丢弃过期播放结果(M3U8处理后): ep={}", ep.name)
+                return
+            }
+            // 广告网关等处理后可能清空地址，立刻换线，避免起播秒停
+            if (result.playResultIsEmpty()) {
+                handleEmptyPlayResult(tryNextLine = true)
+                return
+            }
+            if (!isDirectlyPlayable(result.url.v()) && !result.needParse() && !result.isUseParse()) {
+                log.warn("播放地址不可直接播放，尝试换线: {}", result.url.v().take(80))
+                handleEmptyPlayResult(tryNextLine = true)
+                return
+            }
+
+            log.info("applyPlayerResult: ep={}", ep.name)
+            updatePlayState(result, ep)
+
+            var playable = result
+            if (playable.needParse() || playable.isUseParse()) {
+                val beforeParse = playable.url.v()
+                playable = resolvePlayResult(playable) ?: run {
+                    // 解析失败但原地址可播：对齐 TV，直接播直链
+                    if (isDirectlyPlayable(beforeParse) ||
+                        com.corner.util.VideoSniffer.isVideoFormat(beforeParse)
+                    ) {
+                        log.warn("解析失败，回退原始直链: {}", beforeParse.take(120))
+                        playable
+                    } else {
+                        if (!isPlayerContentActive(taskId)) return
+                        SnackBar.postMsg("解析播放地址失败，尝试切换线路", type = SnackBar.MessageType.WARNING)
+                        handleEmptyPlayResult(tryNextLine = true)
+                        return
+                    }
+                }
+                if (playable.playResultIsEmpty()) {
+                    if (!isPlayerContentActive(taskId)) return
+                    handleEmptyPlayResult(tryNextLine = true)
+                    return
+                }
+                if (!isPlayerContentActive(taskId) || cannotApply(playable)) return
+                updatePlayState(playable, ep)
+            }
+
+            if (!isPlayerContentActive(taskId) || cannotApply(playable)) return
+            if (!isDirectlyPlayable(playable.url.v())) {
+                log.warn("解析后仍不可直接播放，尝试换线: {}", playable.url.v().take(80))
+                handleEmptyPlayResult(tryNextLine = true)
+                return
+            }
+            startPlayback(playable, ep)
+        } catch (e: CancellationException) {
+            log.info("播放任务已取消: ep={}", ep.name)
+            throw e
+        } catch (e: TimeoutCancellationException) {
+            if (!isPlayerContentActive(taskId)) return
+            handleError("获取播放地址超时，请稍后重试")
+        } catch (e: Exception) {
+            if (!isPlayerContentActive(taskId)) return
+            handleError("获取播放地址失败: ${e.message}", e)
+        } finally {
+            synchronized(playFetchLock) {
+                if (fetchingPlayKey == playKey) fetchingPlayKey = null
+            }
+            _state.update { state ->
+                state.copy(
+                    isLoading = false,
+                    isBuffering = if (isPlayerContentActive(taskId)) state.isBuffering else false,
+                )
+            }
+        }
+    }
+
+    /**
+     * 对齐 TV applyPlayerResult → startPlayback：同步起播，不用 playbackJob 排队竞争。
+     */
+    private suspend fun startPlayback(result: Result, ep: Episode) {
+        if (cannotApply(result)) return
+        try {
+            executePlaybackByType(result, ep)
+        } catch (e: CancellationException) {
+            log.info("播放执行已取消: ep={}", ep.name)
+            throw e
+        } catch (e: Exception) {
+            if (!cannotApply(result)) {
+                handleError("播放执行失败: ${e.message}", e)
+            }
+        } finally {
+            _state.update { it.copy(isBuffering = false) }
+        }
     }
 
     private fun fetchPlayResult(detail: Vod, ep: Episode): Result? {
@@ -987,27 +1540,81 @@ class DetailViewModel : BaseViewModel() {
     }
 
     private fun handleSpecialLink(ep: Episode, result: Result?): Boolean {
-        if (isSpecialVideoLink(ep)) {
+        if (Utils.isDownloadLink(ep.url)) {
+            isDownloadUrl.value = true
             _state.update { it.copy(isBuffering = false) }
+            log.info("检测到磁力链接，将通过对话框提示用户选择，url:{}", ep.url)
             return true
         }
         return false
     }
 
-    private fun handleEmptyPlayResult() {
-        _state.update { it.copy(isBuffering = false) }
+    private fun handleEmptyPlayResult(tryNextLine: Boolean = false) {
+        _state.update { it.copy(isBuffering = false, isLoading = false, useParse = false) }
         log.warn("播放结果为空,无法播放")
-        nextFlag()
+        SnackBar.postMsg("获取播放地址失败", type = SnackBar.MessageType.ERROR)
+        // 拉地址失败必须允许继续换线；suppress 只挡 VLC stop/finished 误触发
+        if (tryNextLine) {
+            fallbackToNextLineOrSource()
+        }
+    }
+
+    /** VLC 可直接打开的地址；加密串/相对路径等会变成「File name too long」 */
+    private fun isDirectlyPlayable(url: String): Boolean {
+        val u = url.trim()
+        if (u.isBlank()) return false
+        val lower = u.lowercase()
+        if (lower.startsWith("http://") || lower.startsWith("https://")) return true
+        if (lower.startsWith("file:") || lower.startsWith("rtmp") ||
+            lower.startsWith("rtp://") || lower.startsWith("udp://")
+        ) {
+            return true
+        }
+        if (u.startsWith("/") && (
+                lower.endsWith(".m3u8") || lower.endsWith(".mp4") ||
+                    lower.contains("lumen-m3u8") || lower.contains("cached_m3u8")
+                )
+        ) {
+            return true
+        }
+        return false
     }
 
     private fun updatePlayState(result: Result, ep: Episode) {
-        _state.update { it.copy(currentUrl = result.url) }
+        _state.update { state ->
+            val subs = result.subs.orEmpty()
+            val selected = state.selectedSubUrl.ifBlank { subs.firstOrNull()?.url.orEmpty() }
+            state.copy(
+                currentUrl = result.url,
+                currentPlayUrl = result.url.v(),
+                playResult = result,
+                useParse = result.isUseParse(),
+                availableSubs = subs,
+                selectedSubUrl = selected,
+            )
+        }
+
+        PlaybackMediaState.title = _state.value.detail.vodName.orEmpty()
+        PlaybackMediaState.url = result.url.v()
+        PlaybackMediaState.headers = result.header ?: emptyMap()
+        PlaybackMediaState.subtitleUrl = _state.value.selectedSubUrl
+        PlaybackMediaState.playing = true
+        controller.setSubtitleUrl(_state.value.selectedSubUrl)
+
+        com.corner.ui.danmaku.DanmakuManager.onPlayStart(
+            danmakuUrl = result.danmaku,
+            vodName = _state.value.detail.vodName.orEmpty(),
+            episodeName = ep.name.orEmpty(),
+        )
 
         controller.doWithHistory { history ->
+            // episodeUrl 可能已在 updateCurrentEpisodeState 里改过，用备注判断是否换集
+            val switched = !history.vodRemarks.isNullOrBlank() && history.vodRemarks != ep.name
             history.copy(
                 episodeUrl = ep.url,
                 vodRemarks = ep.name,
-                position = history.position ?: 0L
+                // 换集必须清进度，否则片头 seek 会跳到上一集位置导致秒停
+                position = if (switched) 0L else (history.position ?: 0L),
             )
         }
 
@@ -1017,8 +1624,9 @@ class DetailViewModel : BaseViewModel() {
     /**
      * 根据播放器类型执行播放（使用策略模式）
      */
-    private fun executePlaybackByType(result: Result, ep: Episode) {
-        // 创建策略并执行播放
+    private suspend fun executePlaybackByType(result: Result, ep: Episode) {
+        if (cannotApply(result)) return
+
         val strategy = PlayerStrategyFactory.createStrategy(
             playerType = vmPlayerType.first(),
             controller = controller,
@@ -1026,23 +1634,26 @@ class DetailViewModel : BaseViewModel() {
             viewModelScope = scope
         )
 
-        log.debug("使用播放器策略: {}", strategy.getStrategyName())
+        log.info("executePlayback: ep={}, strategy={}", ep.name, strategy.getStrategyName())
 
-        scope.launch {
-            try {
-                strategy.play(
-                    result = result,
-                    episode = ep,
-                    onPlayStarted = {
-                        _state.update { it.copy(isBuffering = false) }
-                        SnackBar.postMsg("即将播放: ${ep.name}", type = SnackBar.MessageType.INFO)
-                    },
-                    onError = { error ->
-                        handleError(error)
-                        _state.update { it.copy(isBuffering = false) }
-                    }
-                )
-            } catch (e: Exception) {
+        try {
+            strategy.play(
+                result = result,
+                episode = ep,
+                onPlayStarted = {
+                    if (cannotApply(result)) return@play
+                    _state.update { it.copy(isBuffering = false) }
+                },
+                onError = { error ->
+                    if (cannotApply(result)) return@play
+                    playbackError(error)
+                }
+            )
+        } catch (e: CancellationException) {
+            log.debug("播放策略已取消")
+            throw e
+        } catch (e: Exception) {
+            if (!cannotApply(result)) {
                 handleError("播放执行失败: ${e.message}", e)
                 _state.update { it.copy(isBuffering = false) }
             }
@@ -1050,57 +1661,99 @@ class DetailViewModel : BaseViewModel() {
     }
 
     /**
-     * 检测特殊视频链接（下载链接或特殊链接）
-     */
-    private fun isSpecialVideoLink(ep: Episode): Boolean {
-        if (Utils.isDownloadLink(ep.url)) {
-            isDownloadUrl.value = true
-            log.info("检测到磁力链接，将通过对话框提示用户选择，url:{}", ep.url)
-            return true  // 磁力链接是特殊链接，需要弹出对话框
-        }
-
-        val isSpecialLink = SiteViewModel.state.value.isSpecialVideoLink
-        if (isSpecialLink) {
-            log.debug("检测到特殊链接，驳回播放请求")
-            updateEpisodeActivation(ep)
-            scope.launch {
-                historyService.updateCurrentEpisode(ep, _state.value.detail)
-            }
-            return true
-        }
-
-        return false
-    }
-
-    /**
      * 启动视频播放流程
      */
     @OptIn(ExperimentalCoroutinesApi::class)
-    fun startPlay(dt: Vod, ep: Episode = Episode.create("", "")) {
+    fun startPlay(dt: Vod, ep: Episode = Episode.create("", ""), recyclePy: Boolean = false) {
         if (dt.isEmpty()) {
             handleError("视频详情为空")
             return
         }
 
-        scope.launch {
-            _state.update { it.copy(isLoading = true) }
-            val effectiveEp = resolveEffectiveEpisode(ep, dt)
+        val newJob = scope.launch {
+            try {
+                val effectiveEp = resolveEffectiveEpisode(ep, dt)
+                if (effectiveEp == null) {
+                    log.warn("未找到可播放剧集: {}", ep.name)
+                    _state.update { it.copy(isBuffering = false, isLoading = false) }
+                    return@launch
+                }
 
-            if (effectiveEp != null) {
-                log.debug("开始播放视频:{}", effectiveEp.name)
-                _state.update { it.copy(isLoading = false) }
-                playEp(dt, effectiveEp)
+                // 换集时取消自动换线任务，避免旧线路 M3U8 结果回写 currentEp
+                flagSwitchJob?.cancel()
+                suppressAutoLineSwitch = false
+
+                val inFlightJob = playJob
+                if (!recyclePy &&
+                    pendingPlayRequest?.episodeUrl == effectiveEp.url &&
+                    inFlightJob != null &&
+                    inFlightJob.isActive &&
+                    inFlightJob != coroutineContext[Job]
+                ) {
+                    log.info("相同剧集已在请求中，跳过重复拉地址: {}", effectiveEp.name)
+                    return@launch
+                }
+
+                // 换集清空失败线路记录，允许重新尝试
+                if (pendingPlayRequest?.episodeUrl != effectiveEp.url) {
+                    failedFlagsForEpisode.clear()
+                }
+
+                inFlightJob?.takeIf { it != coroutineContext[Job] }?.cancel()
+                playJob = coroutineContext[Job]
+
+                val currentJob = coroutineContext[Job]
+                val taskId = if (recyclePy) {
+                    invalidatePlaybackFully(recyclePy = true, keepJob = currentJob)
+                } else {
+                    cancelPlayerContentRequest(keepJob = currentJob)
+                }
+                if (!isPlayerContentActive(taskId)) return@launch
+
+                // 先作废并异步 stop，立刻拉地址，不串行等待 VLC 停稳
+                controller.invalidatePendingLoads()
+                stopPlaybackForRefresh()
+                log.info("startPlay: 开始拉地址 ep={}", effectiveEp.name)
+                requestPlayerAndPlay(taskId, dt, effectiveEp)
+            } catch (e: CancellationException) {
+                log.debug("startPlay 已取消: ep={}", ep.name)
+                _state.update { it.copy(isBuffering = false, isLoading = false) }
+                throw e
+            } catch (e: Exception) {
+                log.error("startPlay 失败: ep={}", ep.name, e)
+                _state.update { it.copy(isBuffering = false, isLoading = false) }
+                handleError("播放启动失败: ${e.message}", e)
             }
         }
+        playJob = newJob
     }
 
     private suspend fun resolveEffectiveEpisode(ep: Episode, dt: Vod): Episode? {
-        return if (ep.url.isNotBlank()) {
-            ep
-        } else {
-            val findEp = historyService.handlePlaybackHistory(dt, currentEpisodeIndex)
-            findEp ?: dt.subEpisode.firstOrNull()
+        if (ep.url.isNotBlank()) {
+            return ep
         }
+
+        dt.currentFlag.episodes
+            .firstOrNull { it.name == ep.name && it.url.isNotBlank() }
+            ?.let { return it }
+
+        dt.subEpisode
+            .firstOrNull { it.name == ep.name && it.url.isNotBlank() }
+            ?.let { return it }
+
+        if (ep.number > 0) {
+            dt.currentFlag.episodes.firstOrNull { it.number == ep.number && it.url.isNotBlank() }
+                ?.let { return it }
+        }
+
+        return try {
+            withTimeout(PlayerStrategyConfig.DETAIL_HISTORY_QUERY_TIMEOUT_MS) {
+                historyService.handlePlaybackHistory(dt, currentEpisodeIndex)
+            }
+        } catch (e: TimeoutCancellationException) {
+            log.warn("查询播放历史超时，使用列表首集")
+            null
+        } ?: dt.subEpisode.firstOrNull { it.url.isNotBlank() }
     }
 
     /**
@@ -1257,7 +1910,8 @@ class DetailViewModel : BaseViewModel() {
         // 使用EpisodeManager处理下一集逻辑
         episodeManager.nextEpisode(detail, currentEp) { updatedDetail, nextEp ->
             currentSelectedEpNumber = nextEp.number
-            startPlay(updatedDetail, nextEp)
+            updateCurrentEpisodeState(updatedDetail, nextEp)
+            refreshPlayback(updatedDetail, nextEp)
         }
 
         // 检查是否还有更多剧集
@@ -1271,49 +1925,12 @@ class DetailViewModel : BaseViewModel() {
         }
     }
 
-    /**
-     * 尝试切换到下一个视频播放线路
-     */
     fun nextFlag() {
-        _state.update { it.copy(isLoading = true, isBuffering = false) }
-        log.info("nextFlag")
-
-        if (!validateFlagSwitch()) return
-
-        val detail = _state.value.detail.copy()
-        val nextFlag = _state.value.detail.nextFlag()
-
-        if (nextFlag == null) {
-            handleNoMoreFlags(detail)
-            return
+        scope.launch {
+            stopPlaybackForRefresh()
+            _state.update { it.copy(isBuffering = false, isLoading = false) }
+            fallbackToNextLineOrSource()
         }
-
-        detail.currentFlag = nextFlag
-        _currentFlagName.value = nextFlag.flag.toString()
-
-        if (detail.currentFlag.isEmpty()) {
-            handleEmptyFlagWithQuickSearch(detail)
-            return
-        }
-
-        completeFlagSwitch(detail)
-    }
-
-    private fun validateFlagSwitch(): Boolean {
-        if (_state.value.detail.vodFlags.size > 1) {
-            SnackBar.postMsg("加载数据失败，尝试切换线路", type = SnackBar.MessageType.WARNING)
-        } else {
-            _state.update { it.copy(isLoading = false, isBuffering = false) }
-            SnackBar.postMsg("加载数据失败", type = SnackBar.MessageType.ERROR)
-            return false
-        }
-        return true
-    }
-
-    private fun handleNoMoreFlags(detail: Vod) {
-        log.info("没有更多线路可切换，当前线路数: {}", _state.value.detail.vodFlags.size)
-        SnackBar.postMsg("没有更多线路", type = SnackBar.MessageType.WARNING)
-        _state.update { it.copy(detail = it.detail.copy(), isLoading = false, isBuffering = false) }
     }
 
     private fun handleEmptyFlagWithQuickSearch(detail: Vod) {
@@ -1348,24 +1965,14 @@ class DetailViewModel : BaseViewModel() {
         }
     }
 
-    private fun completeFlagSwitch(detail: Vod) {
-        detail.subEpisode = detail.currentFlag.episodes.getPage(_state.value.detail.currentTabIndex).toMutableList()
-        controller.doWithHistory { it.copy(vodFlag = detail.currentFlag.flag) }
-        GlobalAppState.chooseVod.value = detail.copy()
-
-        _state.update { it.copy(detail = detail, isLoading = false, isBuffering = false) }
-        SnackBar.postMsg("切换至线路[${detail.currentFlag.flag}]", type = SnackBar.MessageType.INFO)
-
-        scope.launch {
-            delay(500)
-            playAfterFlagSwitch(detail)
-        }
-    }
-
-    private suspend fun playAfterFlagSwitch(detail: Vod) {
+    private suspend fun playAfterFlagSwitch(taskId: Int, detail: Vod) {
         val history = controller.history.value
         val findEp = if (history != null) {
-            detail.findAndSetEpByName(history, currentEpisodeIndex)
+            // 对齐 TV seamless：用新线路 + vodRemarks 模糊匹配（2 ↔ 第2集）
+            detail.findAndSetEpByName(
+                history.copy(vodFlag = detail.currentFlag.flag),
+                currentEpisodeIndex,
+            )
         } else {
             log.warn("自动切换线路时历史记录为空，使用第一个剧集")
             null
@@ -1373,7 +1980,7 @@ class DetailViewModel : BaseViewModel() {
 
         val episodeToPlay = findEp ?: detail.subEpisode.firstOrNull()
         if (episodeToPlay != null) {
-            startPlay(detail, episodeToPlay)
+            requestPlayerAndPlay(taskId, detail, episodeToPlay)
         } else {
             log.error("切换线路后无可用剧集")
             SnackBar.postMsg("切换线路失败：无可用剧集", type = SnackBar.MessageType.ERROR)
@@ -1396,10 +2003,61 @@ class DetailViewModel : BaseViewModel() {
 
 
     /**
+     * 切换解析器并重新解析播放（与 TV selectParse 一致）
+     */
+    fun selectParse(parse: Parse) {
+        ApiConfig.setParse(parse)
+        val detail = _state.value.detail
+        val ep = detail.subEpisode.find { it.activated } ?: _state.value.currentEp ?: return
+
+        scope.launch {
+            saveCurrentHistory()
+            val taskId = cancelPlayerContentRequest()
+            _state.update { it.copy(isBuffering = true) }
+            pendingPlayRequest = VodPlayRequest(
+                siteKey = detail.site?.key ?: "",
+                flag = detail.currentFlag.flag ?: "",
+                episodeUrl = ep.url,
+                episodeName = ep.name,
+            )
+            stopPlaybackForRefresh()
+
+            var result = withContext(Dispatchers.IO) {
+                fetchPlayResult(detail, ep)
+            }
+            if (!isPlayerContentActive(taskId)) return@launch
+
+            if (result == null || result.playResultIsEmpty()) {
+                handleEmptyPlayResult()
+                return@launch
+            }
+
+            if (result.needParse() || result.isUseParse()) {
+                result = ParseHelper.parseVod(result, useParse = true, forcedParse = parse)
+                if (result == null || result.playResultIsEmpty()) {
+                    SnackBar.postMsg("解析失败: ${parse.name}", type = SnackBar.MessageType.ERROR)
+                    _state.update { it.copy(isBuffering = false) }
+                    return@launch
+                }
+            }
+
+            if (!isPlayerContentActive(taskId) || cannotApply(result)) return@launch
+            log.info("applyPlayerResult: ep={}", ep.name)
+            updatePlayState(result, ep)
+            startPlayback(result, ep)
+        }
+    }
+
+    /**
      * 切换视频播放线路
      */
     fun chooseFlag(detail: Vod, selectedFlag: Flag) {
-        scope.launch {
+        if (selectedFlag.activated) {
+            log.debug("线路已选中，跳过: {}", selectedFlag.flag)
+            return
+        }
+        flagSwitchJob?.cancel()
+        flagSwitchJob = scope.launch {
             val oldNumber = currentSelectedEpNumber
             val newEpisodes = selectedFlag.episodes
             val newEp = findEpisodeByNumber(newEpisodes, oldNumber)
@@ -1412,6 +2070,9 @@ class DetailViewModel : BaseViewModel() {
 
             try {
                 executeFlagSwitch(detail, selectedFlag, newEp)
+            } catch (e: CancellationException) {
+                _state.update { it.copy(isLoading = false, isBuffering = false) }
+                throw e
             } catch (e: TimeoutCancellationException) {
                 handleFlagSwitchTimeout(e)
             } catch (e: Exception) {
@@ -1421,18 +2082,24 @@ class DetailViewModel : BaseViewModel() {
     }
 
     private suspend fun executeFlagSwitch(detail: Vod, selectedFlag: Flag, newEp: Episode?) {
-        val endedDeferred = launchEndedTaskWithTimeout(scope)
+        val taskId = cancelPlayerContentRequest()
+        suppressAutoLineSwitch = true
 
-        withTimeout(7000) {
+        try {
             detail.updateFlagActivationStates(selectedFlag)
 
             val updatedDetail = detail.buildUpdatedDetail(selectedFlag, newEp)
 
             controller.doWithHistory { it.copy(vodFlag = detail.currentFlag.flag) }
 
-            endedDeferred.await()
+            saveCurrentHistory()
+            controller.invalidatePendingLoads()
+            stopPlaybackForRefresh()
 
-            playEpisodeAfterFlagSwitch(updatedDetail, newEp)
+            if (!isPlayerContentActive(taskId)) {
+                suppressAutoLineSwitch = false
+                return
+            }
 
             _state.update { model ->
                 model.copy(
@@ -1441,6 +2108,17 @@ class DetailViewModel : BaseViewModel() {
                     isBuffering = false
                 )
             }
+
+            playJob = scope.launch {
+                try {
+                    playEpisodeAfterFlagSwitch(taskId, updatedDetail, newEp)
+                } finally {
+                    suppressAutoLineSwitch = false
+                }
+            }
+        } catch (e: Exception) {
+            suppressAutoLineSwitch = false
+            throw e
         }
     }
 
@@ -1448,43 +2126,31 @@ class DetailViewModel : BaseViewModel() {
         return episodes.find { it.number == number } ?: episodes.firstOrNull()
     }
 
-    private fun launchEndedTaskWithTimeout(scope: CoroutineScope): Deferred<Unit> {
-        return scope.async<Unit> {
-            try {
-                withTimeout(PlayerStrategyConfig.DETAIL_HISTORY_QUERY_TIMEOUT_MS) {
-                    lifecycleManager.ended()
-                }
-            } catch (e: TimeoutCancellationException) {
-                SnackBar.postMsg("关闭媒体超时！请稍后切换线路重试...", type = SnackBar.MessageType.ERROR)
-                log.error("关闭媒体超时,等待播放器缓存完成...")
-                throw e
-            }
-        }
+    private fun handleFlagSwitchTimeout(e: TimeoutCancellationException) {
+        log.error("切换线路时停止播放超时", e)
+        SnackBar.postMsg("切换线路超时，请稍后重试", type = SnackBar.MessageType.ERROR)
+        _state.update { it.copy(isLoading = false, isBuffering = false) }
     }
 
-    private suspend fun playEpisodeAfterFlagSwitch(updatedDetail: Vod, newEp: Episode?) {
+    private suspend fun playEpisodeAfterFlagSwitch(taskId: Int, updatedDetail: Vod, newEp: Episode?) {
         val history = controller.history.value
 
         if (history != null) {
-            val findEp = updatedDetail.findAndSetEpByName(history, currentSelectedEpNumber)
+            val findEp = updatedDetail.findAndSetEpByName(
+                history.copy(vodFlag = updatedDetail.currentFlag.flag),
+                currentSelectedEpNumber,
+            )
             log.debug("切换线路，新的剧集数据: {}", findEp)
 
             if (findEp != null) {
-                startPlay(updatedDetail, findEp)
+                requestPlayerAndPlay(taskId, updatedDetail, findEp)
                 return
             }
         }
 
-        // 如果没有历史记录或找不到对应剧集，使用传入的新剧集
         if (newEp != null) {
-            startPlay(updatedDetail, newEp)
+            requestPlayerAndPlay(taskId, updatedDetail, newEp)
         }
-    }
-
-    private fun handleFlagSwitchTimeout(e: TimeoutCancellationException) {
-        log.error("切换线路超时(7秒)，切换失败", e)
-        SnackBar.postMsg("切换线路超时，切换失败！请等待播放器缓存完毕!", type = SnackBar.MessageType.ERROR)
-        _state.update { it.copy(isLoading = false, isBuffering = false) }
     }
 
     private fun handleFlagSwitchError(e: Exception) {
@@ -1614,16 +2280,23 @@ class DetailViewModel : BaseViewModel() {
     }
 
     /**
-     * 选择指定剧集进行播放操作
+     * 选择指定剧集（对齐 TV selectEpisode → refresh，无防抖）
      */
     fun chooseEp(episode: Episode, openUri: (String) -> Unit) {
-        log.debug("切换剧集: {}", episode)
+        val currentEp = _state.value.currentEp
+        if (currentEp?.url == episode.url &&
+            controller.state.value.state == PlayState.PLAY
+        ) {
+            log.debug("已是当前播放剧集，跳过: {}", episode.name)
+            return
+        }
+
         currentSelectedEpNumber = episode.number
+        log.info("切换剧集: {}", episode.name)
+        _state.update { it.copy(isBuffering = true, isLoading = false) }
 
         scope.launch {
             val currentDetail = _state.value.detail
-
-            // 使用EpisodeManager处理剧集选择逻辑
             episodeManager.chooseEpisode(
                 episode = episode,
                 detail = currentDetail,
@@ -1632,7 +2305,7 @@ class DetailViewModel : BaseViewModel() {
                 onOpenUri = openUri,
                 onPlayEpisode = { updatedDetail, selectedEp ->
                     updateCurrentEpisodeState(updatedDetail, selectedEp)
-                    startPlay(_state.value.detail, selectedEp)
+                    refreshPlayback(updatedDetail, selectedEp)
                 }
             )
         }
@@ -1640,17 +2313,14 @@ class DetailViewModel : BaseViewModel() {
 
     private fun updateCurrentEpisodeState(updatedDetail: Vod, episode: Episode) {
         _state.update { model ->
-            var newModel = model.copy(currentEp = episode, detail = updatedDetail)
-
-            if (model.currentEp?.name != episode.name) {
+            val switched = model.currentEp?.url != episode.url || model.currentEp?.name != episode.name
+            if (switched) {
                 controller.doWithHistory { it.copy(position = 0L) }
             }
-
             controller.doWithHistory {
                 it.copy(episodeUrl = episode.url, vodRemarks = episode.name)
             }
-
-            newModel
+            model.copy(currentEp = episode, detail = updatedDetail)
         }
     }
 

@@ -26,6 +26,7 @@ object Db:KoinComponent{
     val Config:ConfigDao by lazy{ database.getConfigDao() }
     val Site:SiteDao by lazy { database.getSiteDao() }
     val History:HistoryDao by lazy { database.getHistoryDao() }
+    val Keep:KeepDao by lazy { database.getKeepDap() }
 }
 
 @Database(entities = [Config::class, History::class, Keep::class, Site::class, SpiderStatus::class], version = 5)

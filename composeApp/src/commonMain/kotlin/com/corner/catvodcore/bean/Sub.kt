@@ -3,14 +3,16 @@ package com.corner.catvodcore.bean
 import kotlinx.serialization.Serializable
 
 @Serializable
-class Sub {
-    private val url: String? = null
-
-    private val name: String? = null
-
-    private val lang: String? = null
-
-    private val format: String? = null
-
-    private val flag = 0
+data class Sub(
+    val name: String = "",
+    val url: String = "",
+    val lang: String = "",
+    val format: String = "",
+    val flag: Int = 0,
+) {
+    fun label(): String {
+        if (name.isNotBlank()) return name
+        if (lang.isNotBlank()) return lang
+        return url.substringAfterLast('/').ifBlank { "字幕" }
+    }
 }

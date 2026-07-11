@@ -34,19 +34,19 @@ object PlayerStrategyConfig {
      * 加载媒体URL的超时时间（毫秒）
      * 用于 controller.loadURL() 操作
      */
-    const val INNIE_LOAD_URL_TIMEOUT_MS = 5000L
+    const val INNIE_LOAD_URL_TIMEOUT_MS = 30_000L
     
     /**
      * 等待播放启动的超时时间（毫秒）
      * 用于 waitForPlaybackToStart() 操作
      */
-    const val INNIE_PLAYBACK_START_TIMEOUT_MS = 30000L
+    const val INNIE_PLAYBACK_START_TIMEOUT_MS = 15000L
     
     /**
      * 缓冲完成阈值（百分比）
      * 当缓冲进度达到此值时认为可以开始播放
      */
-    const val INNIE_BUFFER_COMPLETE_THRESHOLD = 100f
+    const val INNIE_BUFFER_COMPLETE_THRESHOLD = 30f
     
     // ==================== DetailViewModel 配置 ====================
     
@@ -60,7 +60,12 @@ object PlayerStrategyConfig {
      * 历史记录查询超时时间（毫秒）
      * 用于数据库查询操作
      */
-    const val DETAIL_HISTORY_QUERY_TIMEOUT_MS = 3000L
+    const val DETAIL_HISTORY_QUERY_TIMEOUT_MS = 5000L
+
+    /**
+     * 换集防抖间隔（毫秒），避免连点导致播放任务互相取消
+     */
+    const val EPISODE_SWITCH_DEBOUNCE_MS = 350L
     
     // ==================== 通用配置 ====================
     

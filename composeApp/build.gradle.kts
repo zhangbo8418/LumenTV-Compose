@@ -21,6 +21,12 @@ dependencies {
 kotlin {
     jvm("desktop")
 
+    // Desktop 无 Android Looper；coroutines-android 的 Main 优先级高于 Swing，
+    // 会导致 Dispatchers.Main 初始化失败（电直播等直接用 viewModelScope 会崩）。
+    configurations.configureEach {
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-android")
+    }
+
     sourceSets {
         commonMain {
             kotlin.srcDir("build/generated/ksp/metadata/commonMain/kotlin")
@@ -102,6 +108,9 @@ kotlin {
                 // Playwright for WAF bypass (used by some spiders like ChangZhang)
                 implementation(libs.playwright)
 
+                // QuickJS for JS spider support
+                implementation(project(":quickjs-bridge"))
+
                 // Coroutines
                 implementation(libs.kotlinx.coroutines.swing)
             }
@@ -162,6 +171,9 @@ kotlin {
 }
 
 
+apply(from = "python-bundle.gradle.kts")
+apply(from = "ffmpeg-bundle.gradle.kts")
+
 compose.desktop {
     application {
         mainClass = "MainKt"
@@ -171,7 +183,8 @@ compose.desktop {
             version.set("7.7.0")
             configurationFiles.from(project.file("src/desktopMain/rules.pro"))
             obfuscate.set(false)
-            optimize.set(true)
+            // optimize 易把 JDK XML 调用改写成 parse$xxxx，导致 jUPnP NoSuchMethodError
+            optimize.set(false)
         }
 
         jvmArgs("-Dfile.encoding=UTF-8")
@@ -193,6 +206,9 @@ compose.desktop {
                 "java.naming",
                 "java.base",
                 "java.sql",
+                "java.xml",      // jUPnP / DLNA DocumentBuilder
+                "java.logging",
+                "java.desktop",
                 "jdk.zipfs"  // JAR 文件系统支持（Playwright 需要）
             )
             val dir = project.layout.projectDirectory.dir("src/desktopMain/appResources")

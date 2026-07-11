@@ -30,6 +30,9 @@ interface ConfigDao {
     @Query("UPDATE Config SET home = :key where type = :type and url = :url ")
     suspend fun setHome(url: String?, type: Int, key: String)
 
+    @Query("UPDATE Config SET parse = :name where type = :type and url = :url ")
+    suspend fun setParse(url: String?, type: Int, name: String)
+
     @Query("SELECT * from Config")
     fun getAll(): Flow<List<Config>>
 

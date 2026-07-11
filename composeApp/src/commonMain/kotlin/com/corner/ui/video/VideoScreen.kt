@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.window.WindowDraggableArea
 import androidx.compose.material3.Card
@@ -50,18 +51,24 @@ import com.corner.catvodcore.enum.ConfigType
 import com.corner.catvodcore.enum.Menu
 import com.corner.catvodcore.viewmodel.GlobalAppState
 import com.corner.database.Db
+import com.corner.database.entity.Config
+import com.corner.database.entity.displayName
 import com.corner.init.Init
 import com.corner.init.Init.Companion.initConfig
 import com.corner.ui.nav.vm.VideoViewModel
 import com.corner.ui.scene.*
+import com.corner.ui.setConfig
+import com.corner.ui.WallpaperBackground
 import com.corner.util.spider.SpiderTestUtil
 import com.corner.util.isScrollingUp
 import com.corner.ui.scene.AutoSizeImageWithLoading
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.painterResource
 import lumentv_compose.composeapp.generated.resources.Res
+import lumentv_compose.composeapp.generated.resources.LumenTV_icon_svg
 import lumentv_compose.composeapp.generated.resources.folder_back
 import lumentv_compose.composeapp.generated.resources.no_img
 
@@ -204,6 +211,7 @@ fun WindowScope.VideoScene(
     }
 
     var showChooseHome by remember { mutableStateOf(false) }
+    var showDepotHistory by remember { mutableStateOf(false) }
     var showFiltersDialog by remember { mutableStateOf(false) }
     var showPlaywrightDownloadDialog by remember { mutableStateOf(false) }
     var playwrightSpiderName by remember { mutableStateOf("") }
@@ -218,13 +226,18 @@ fun WindowScope.VideoScene(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
+        WallpaperBackground(Modifier.fillMaxSize())
         Scaffold(
+            containerColor = Color.Transparent,
+            contentColor = MaterialTheme.colorScheme.onSurface,
             topBar = {
                 WindowDraggableArea {
                     VideoTopBar(
                         vm = vm,
                         onClickSearch = { onClickSwitch(Menu.SEARCH) },
                         onClickChooseHome = { showChooseHome = !showChooseHome },
+                        onClickDepot = { showDepotHistory = true },
+                        onClickLive = { onClickSwitch(Menu.LIVE) },
                         onClickSetting = { onClickSwitch(Menu.SETTING) },
                         onClickHistory = { onClickSwitch(Menu.HISTORY) })
                 }
@@ -235,7 +248,7 @@ fun WindowScope.VideoScene(
                 }
             }
         ) {
-            Box(modifier = modifier.fillMaxSize().padding(it)) {
+            Box(modifier = modifier.fillMaxSize().padding(it).background(Color.Transparent)) {
                 Column {
                     val classIsEmpty = derivedStateOf { model.value.classList.isNotEmpty() }
                     if (classIsEmpty.value) {
@@ -375,6 +388,18 @@ fun WindowScope.VideoScene(
                 state.animateScrollToItem(0)
             }
         }
+
+        DepotHistoryDialog(
+            showDialog = showDepotHistory,
+            onClose = { showDepotHistory = false },
+            onSwitched = {
+                showDepotHistory = false
+                vm.clear()
+                scope.launch {
+                    state.animateScrollToItem(0)
+                }
+            }
+        )
         
         // Playwright 浏览器下载对话框
         if (showPlaywrightDownloadDialog) {
@@ -575,6 +600,8 @@ fun VideoTopBar(
     vm: VideoViewModel,
     onClickSearch: () -> Unit,
     onClickChooseHome: () -> Unit,
+    onClickDepot: () -> Unit,
+    onClickLive: () -> Unit,
     onClickSetting: () -> Unit,
     onClickHistory: () -> Unit
 ) {
@@ -582,35 +609,73 @@ fun VideoTopBar(
     val model = vm.state.collectAsState()
     val isLoading by vm.isLoading
     val showProgress by GlobalAppState.showProgress.collectAsState()
+    val apiState = ApiConfig.apiFlow.collectAsState()
+    val logoUrl = apiState.value.logo.orEmpty()
+    val depotLabel = apiState.value.cfg?.displayName()?.takeIf { it.isNotBlank() }
+        ?: apiState.value.url
 
     ControlBar(
         title = {},
         modifier = Modifier.height(80.dp).padding(horizontal = 16.dp, vertical = 8.dp),
         leading = {
-            Box(
+            Row(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .padding(vertical = 8.dp), // 增加垂直padding
-                contentAlignment = Alignment.Center
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // 首页选择按钮
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable(enabled = !isLoading) { onClickDepot() }
+                        .alpha(if (isLoading) 0.5f else 1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (logoUrl.isNotBlank()) {
+                        AnimatedNetworkImage(
+                            url = logoUrl,
+                            contentDescription = "仓库头像",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop,
+                            errorContent = {
+                                Image(
+                                    painter = painterResource(Res.drawable.LumenTV_icon_svg),
+                                    contentDescription = "仓库头像",
+                                    modifier = Modifier.fillMaxSize().padding(6.dp),
+                                    contentScale = ContentScale.Fit,
+                                )
+                            },
+                        )
+                    } else {
+                        Image(
+                            painter = painterResource(Res.drawable.LumenTV_icon_svg),
+                            contentDescription = "仓库头像",
+                            modifier = Modifier.fillMaxSize().padding(6.dp),
+                            contentScale = ContentScale.Fit,
+                        )
+                    }
+                }
+
                 FilledTonalButton(
-                    onClick = { if (!isLoading) onClickChooseHome() }, // 仅在非加载状态响应点击
+                    onClick = { if (!isLoading) onClickChooseHome() },
                     modifier = Modifier
                         .height(40.dp)
-                        .alpha(if (isLoading) 0.5f else 1f), // 加载时半透明
-                    enabled = !isLoading || showProgress, // 关键：禁用状态
+                        .alpha(if (isLoading) 0.5f else 1f),
+                    enabled = !isLoading || showProgress,
                     colors = ButtonDefaults.filledTonalButtonColors(
                         containerColor = MaterialTheme.colorScheme.surfaceVariant,
                         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), // 禁用状态背景色
-                        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)  // 禁用状态内容色
+                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                     ),
                     shape = RoundedCornerShape(8.dp),
                     elevation = ButtonDefaults.buttonElevation(
                         defaultElevation = 1.dp,
                         pressedElevation = 2.dp,
-                        disabledElevation = 0.dp // 禁用时取消阴影
+                        disabledElevation = 0.dp
                     )
                 ) {
                     Row(
@@ -623,19 +688,18 @@ fun VideoTopBar(
                             modifier = Modifier.size(20.dp)
                         )
                         Text(
-                            text = home.value.name.ifEmpty { "暂无数据" },
+                            text = home.value.name.ifEmpty { depotLabel?.takeIf { it.isNotBlank() } ?: "暂无数据" },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Medium,
                             modifier = Modifier.padding(start = 5.dp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
-                                alpha = if (isLoading) 0.5f else 0.8f // 根据状态调整透明度
+                                alpha = if (isLoading) 0.5f else 0.8f
                             ),
                         )
-                        // 加载动画（仅在加载时显示）
                         if (isLoading || showProgress) {
-                            Spacer(modifier = Modifier.width(4.dp)) // 添加间距
+                            Spacer(modifier = Modifier.width(4.dp))
                             CircularProgressIndicator(
                                 modifier = Modifier.size(16.dp),
                                 strokeWidth = 2.dp,
@@ -700,6 +764,24 @@ fun VideoTopBar(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // 直播按钮
+                IconButton(
+                    onClick = { onClickLive() },
+                    modifier = Modifier
+                        .size(36.dp)
+                        .padding(2.dp),
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.LiveTv,
+                        contentDescription = "直播",
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+
                 // 历史记录按钮
                 IconButton(
                     onClick = { onClickHistory() },
@@ -827,6 +909,109 @@ fun ClassRow(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
+fun DepotHistoryDialog(
+    showDialog: Boolean,
+    onClose: () -> Unit,
+    onSwitched: () -> Unit,
+) {
+    var configs by remember { mutableStateOf<List<Config>>(emptyList()) }
+    val apiState = ApiConfig.apiFlow.collectAsState()
+    val currentUrl = apiState.value.cfg?.url ?: apiState.value.url
+
+    LaunchedEffect(showDialog) {
+        if (showDialog) {
+            configs = Db.Config.getAll().firstOrNull()
+                ?.filter { it.type == ConfigType.SITE.ordinal.toLong() }
+                ?.sortedByDescending { it.time }
+                .orEmpty()
+        }
+    }
+
+    Dialog(
+        modifier = Modifier
+            .width(360.dp)
+            .heightIn(min = 160.dp, max = 480.dp)
+            .zIndex(10f),
+        showDialog = showDialog,
+        onClose = onClose,
+        enter = scaleIn(initialScale = 0.8f) + fadeIn(),
+        exit = scaleOut(targetScale = 0.8f) + fadeOut()
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = "仓库历史",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(16.dp)
+            )
+            if (configs.isEmpty()) {
+                Text(
+                    text = "暂无仓库记录，请先在设置中配置点播源",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 24.dp)
+                )
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f, fill = false)) {
+                    items(configs, key = { it.id }) { cfg ->
+                        val selected = cfg.url == currentUrl
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    text = cfg.displayName(),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                )
+                            },
+                            supportingContent = {
+                                if (!cfg.name.isNullOrBlank() && cfg.url != cfg.name) {
+                                    Text(
+                                        text = cfg.url.orEmpty(),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            },
+                            trailingContent = {
+                                if (selected) {
+                                    Icon(
+                                        Icons.Default.Check,
+                                        contentDescription = "当前",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    if (cfg.url.isNullOrBlank() || selected) {
+                                        onClose()
+                                        return@clickable
+                                    }
+                                    setConfig(cfg.url) { _, ok ->
+                                        if (ok) onSwitched() else onClose()
+                                    }
+                                },
+                            colors = ListItemDefaults.colors(
+                                containerColor = if (selected) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                                } else {
+                                    Color.Transparent
+                                }
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
 fun ChooseHomeDialog(
     vm: VideoViewModel,
     showDialog: Boolean,
@@ -835,7 +1020,7 @@ fun ChooseHomeDialog(
 ) {
     val model = vm.state.collectAsState()
     val apiState = ApiConfig.apiFlow.collectAsState()
-    val sites by derivedStateOf { apiState.value.sites.toList() }
+    val sites by derivedStateOf { apiState.value.sites.filter { !it.isHide() } }
     var isTestingAll by remember { mutableStateOf(false) }
     val enableAdvancedMode by SpiderTestUtil.enableAdvancedMode.collectAsState()
     val spiderStatusMap by SpiderTestUtil.spiderStatusMapFlow.collectAsState()

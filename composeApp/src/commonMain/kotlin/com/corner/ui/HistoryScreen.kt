@@ -33,6 +33,9 @@ import com.corner.catvodcore.viewmodel.GlobalAppState.hideProgress
 import com.corner.catvodcore.viewmodel.GlobalAppState.showProgress
 import com.corner.database.dao.buildVod
 import com.corner.database.entity.History
+import com.corner.database.entity.Keep
+import com.corner.catvodcore.keep.buildVod as keepBuildVod
+import com.corner.ui.nav.data.HistoryTab
 import com.corner.ui.nav.vm.HistoryViewModel
 import com.corner.ui.scene.BackRow
 import com.corner.ui.scene.ControlBar
@@ -140,15 +143,109 @@ fun HistoryItem(
 }
 
 @Composable
+fun KeepItem(
+    modifier: Modifier,
+    keep: Keep,
+    onDelete: (String) -> Unit,
+    click: (Keep) -> Unit
+) {
+    var deleteConfirmed by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = modifier.clickable(enabled = true, onClick = { click(keep) }),
+        elevation = CardDefaults.cardElevation(8.dp),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        ContextMenuArea(items = {
+            listOf(ContextMenuItem("删除") {
+                onDelete(keep.key)
+            })
+        }) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Box(
+                    modifier = modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                ) {
+                    AutoSizeImageWithLoading(
+                        url = keep.vodPic.orEmpty(),
+                        contentDescription = keep.vodName,
+                        modifier = Modifier.height(220.dp).fillMaxWidth(),
+                        contentScale = ContentScale.Crop,
+                        errorPainter = { painterResource(Res.drawable.no_img) },
+                        loadingIndicator = {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(36.dp).align(Alignment.Center),
+                                strokeWidth = 3.dp,
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                                trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                            )
+                        }
+                    )
+
+                    Text(
+                        text = keep.vodName.orEmpty(),
+                        modifier = Modifier.background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f))
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth().padding(0.dp, 10.dp),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f),
+                        maxLines = 1,
+                        softWrap = true,
+                        overflow = TextOverflow.Ellipsis,
+                        style = TextStyle(textAlign = TextAlign.Center)
+                    )
+                    Text(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(3.dp))
+                            .padding(5.dp),
+                        text = keep.siteName.orEmpty(),
+                        fontWeight = FontWeight.Bold,
+                        style = TextStyle(
+                            color = Color.White,
+                            shadow = Shadow(Color.Black, offset = Offset(2F, 2F), blurRadius = 1.5F)
+                        )
+                    )
+                }
+                Button(
+                    onClick = {
+                        if (deleteConfirmed) {
+                            onDelete(keep.key)
+                            deleteConfirmed = false
+                        } else {
+                            deleteConfirmed = true
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (deleteConfirmed) Color.Red else MaterialTheme.colorScheme.background,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    ),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Icon(
+                        imageVector = if (deleteConfirmed) Icons.Default.Delete else Icons.Default.Close,
+                        contentDescription = if (deleteConfirmed) "确认删除" else "删除"
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun WindowScope.HistoryScene(vm: HistoryViewModel, onClickItem: (Vod) -> Unit, onClickBack: () -> Unit) {
     val model = vm.state.collectAsState()
     var chooseHistory by remember { mutableStateOf<History?>(null) }
+    val selectedTab = model.value.selectedTab
 
     LaunchedEffect(Unit) {
         showProgress()
         SiteViewModel.viewModelScope.launch {
             try {
                 vm.fetchHistoryList()
+                vm.fetchKeepList()
             } finally {
                 hideProgress()
             }
@@ -169,7 +266,7 @@ fun WindowScope.HistoryScene(vm: HistoryViewModel, onClickItem: (Vod) -> Unit, o
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "历史记录",
+                                    text = if (selectedTab == HistoryTab.HISTORY) "历史记录" else "我的收藏",
                                     style = MaterialTheme.typography.headlineMedium.copy(
                                         fontWeight = FontWeight.SemiBold,
                                         letterSpacing = 0.15.sp,
@@ -223,13 +320,17 @@ fun WindowScope.HistoryScene(vm: HistoryViewModel, onClickItem: (Vod) -> Unit, o
                                 onDismissRequest = { showConfirmDialog = false },
                                 title = {
                                     Text(
-                                        "确认清空历史记录",
+                                        if (selectedTab == HistoryTab.HISTORY) "确认清空历史记录" else "确认清空收藏",
                                         style = MaterialTheme.typography.headlineSmall
                                     )
                                 },
                                 text = {
                                     Text(
-                                        "此操作将永久删除所有历史记录，且不可恢复。",
+                                        if (selectedTab == HistoryTab.HISTORY) {
+                                            "此操作将永久删除所有历史记录，且不可恢复。"
+                                        } else {
+                                            "此操作将永久删除所有收藏记录，且不可恢复。"
+                                        },
                                         style = MaterialTheme.typography.bodyMedium
                                     )
                                 },
@@ -237,8 +338,12 @@ fun WindowScope.HistoryScene(vm: HistoryViewModel, onClickItem: (Vod) -> Unit, o
                                     FilledTonalButton(
                                         onClick = {
                                             showConfirmDialog = false
-                                            vm.clearHistory()
-                                            vm.fetchHistoryList()
+                                            if (selectedTab == HistoryTab.HISTORY) {
+                                                vm.clearHistory()
+                                                vm.fetchHistoryList()
+                                            } else {
+                                                vm.clearKeep()
+                                            }
                                         },
                                         colors = ButtonDefaults.filledTonalButtonColors(
                                             containerColor = MaterialTheme.colorScheme.error,
@@ -262,6 +367,21 @@ fun WindowScope.HistoryScene(vm: HistoryViewModel, onClickItem: (Vod) -> Unit, o
                     }
                 )
             }
+            TabRow(
+                selectedTabIndex = selectedTab.ordinal,
+                modifier = Modifier.padding(bottom = 8.dp)
+            ) {
+                Tab(
+                    selected = selectedTab == HistoryTab.HISTORY,
+                    onClick = { vm.selectTab(HistoryTab.HISTORY) },
+                    text = { Text("历史记录") }
+                )
+                Tab(
+                    selected = selectedTab == HistoryTab.KEEP,
+                    onClick = { vm.selectTab(HistoryTab.KEEP) },
+                    text = { Text("我的收藏") }
+                )
+            }
             val gridState = remember { LazyGridState() }
             LazyVerticalGrid(
                 modifier = Modifier.padding(horizontal = 10.dp),
@@ -272,14 +392,26 @@ fun WindowScope.HistoryScene(vm: HistoryViewModel, onClickItem: (Vod) -> Unit, o
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 userScrollEnabled = true,
             ) {
-                itemsIndexed(items = model.value.historyList) { _: Int, it: History ->
-                    HistoryItem(
-                        Modifier,
-                        it, showSite = false, onDelete = { key ->
-                            vm.deleteBatchHistory(listOf(key))
-                        }) {
-                        onClickItem(it.buildVod())
-                        chooseHistory = it
+                if (selectedTab == HistoryTab.HISTORY) {
+                    itemsIndexed(items = model.value.historyList) { _: Int, it: History ->
+                        HistoryItem(
+                            Modifier,
+                            it, showSite = false, onDelete = { key ->
+                                vm.deleteBatchHistory(listOf(key))
+                            }) {
+                            onClickItem(it.buildVod())
+                            chooseHistory = it
+                        }
+                    }
+                } else {
+                    itemsIndexed(items = model.value.keepList) { _: Int, it: Keep ->
+                        KeepItem(
+                            Modifier,
+                            it,
+                            onDelete = { key -> vm.deleteKeep(key) }
+                        ) {
+                            onClickItem(it.keepBuildVod())
+                        }
                     }
                 }
             }

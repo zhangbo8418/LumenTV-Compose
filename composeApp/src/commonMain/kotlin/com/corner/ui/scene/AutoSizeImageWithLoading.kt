@@ -12,25 +12,14 @@ import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.layout.ContentScale
 import com.seiko.imageloader.ImageLoader
 import com.seiko.imageloader.LocalImageLoader
+import com.seiko.imageloader.model.ImageAction
 import com.seiko.imageloader.model.ImageEvent
 import com.seiko.imageloader.model.ImageResult
+import com.seiko.imageloader.toPainter
 import com.seiko.imageloader.ui.AutoSizeBox
 
 /**
  * 支持自定义加载指示器的 AutoSizeImage 组件
- * 
- * @param url 图片URL
- * @param contentDescription 内容描述
- * @param modifier 修饰符
- * @param alignment 对齐方式
- * @param contentScale 缩放模式
- * @param alpha 透明度
- * @param colorFilter 颜色过滤器
- * @param imageLoader 图片加载器
- * @param placeholderPainter 占位符绘制器（加载中显示）
- * @param errorPainter 错误绘制器（加载失败显示）
- * @param loadingIndicator 自定义加载指示器（仅在加载中显示）
- * @param isOnlyPostFirstEvent 是否只发布首次事件
  */
 @Composable
 fun AutoSizeImageWithLoading(
@@ -47,8 +36,9 @@ fun AutoSizeImageWithLoading(
     loadingIndicator: @Composable (() -> Unit)? = null,
     isOnlyPostFirstEvent: Boolean = true,
 ) {
+    if (url.isBlank()) return
     var isLoading by remember(url) { mutableStateOf(true) }
-    
+
     Box(modifier = modifier) {
         AutoSizeBox(
             url = url,
@@ -58,7 +48,6 @@ fun AutoSizeImageWithLoading(
         ) { action ->
             when (action) {
                 is ImageEvent -> {
-                    // 开始加载，显示占位符或加载指示器
                     isLoading = true
                     placeholderPainter?.invoke()?.let { painter ->
                         Image(
@@ -72,27 +61,20 @@ fun AutoSizeImageWithLoading(
                         )
                     }
                 }
-                is ImageResult.OfBitmap, is ImageResult.OfImage, is ImageResult.OfPainter -> {
-                    // 加载成功，显示图片
+                is ImageAction.Success -> {
                     isLoading = false
-                    val painter = when (action) {
-                        is ImageResult.OfPainter -> action.painter
-                        else -> null
-                    }
-                    painter?.let {
-                        Image(
-                            painter = it,
-                            contentDescription = contentDescription,
-                            modifier = Modifier.fillMaxSize(),
-                            alignment = alignment,
-                            contentScale = contentScale,
-                            alpha = alpha,
-                            colorFilter = colorFilter
-                        )
-                    }
+                    val painter = successPainter(action) ?: return@AutoSizeBox
+                    Image(
+                        painter = painter,
+                        contentDescription = contentDescription,
+                        modifier = Modifier.fillMaxSize(),
+                        alignment = alignment,
+                        contentScale = contentScale,
+                        alpha = alpha,
+                        colorFilter = colorFilter
+                    )
                 }
                 is ImageResult.OfError, is ImageResult.OfSource -> {
-                    // 加载失败，显示错误图片
                     isLoading = false
                     errorPainter?.invoke()?.let { painter ->
                         Image(
@@ -106,19 +88,16 @@ fun AutoSizeImageWithLoading(
                         )
                     }
                 }
+                else -> Unit
             }
         }
-        
-        // 自定义加载指示器 - 仅在加载中显示
+
         if (isLoading && loadingIndicator != null) {
             loadingIndicator()
         }
     }
 }
 
-/**
- * 支持自定义加载指示器的 AutoSizeImage 组件（使用资源ID）
- */
 @Composable
 fun AutoSizeImageWithLoading(
     resId: Int,
@@ -135,7 +114,7 @@ fun AutoSizeImageWithLoading(
     isOnlyPostFirstEvent: Boolean = true,
 ) {
     var isLoading by remember(resId) { mutableStateOf(true) }
-    
+
     Box(modifier = modifier) {
         AutoSizeBox(
             resId = resId,
@@ -158,23 +137,18 @@ fun AutoSizeImageWithLoading(
                         )
                     }
                 }
-                is ImageResult.OfBitmap, is ImageResult.OfImage, is ImageResult.OfPainter -> {
+                is ImageAction.Success -> {
                     isLoading = false
-                    val painter = when (action) {
-                        is ImageResult.OfPainter -> action.painter
-                        else -> null
-                    }
-                    painter?.let {
-                        Image(
-                            painter = it,
-                            contentDescription = contentDescription,
-                            modifier = Modifier.fillMaxSize(),
-                            alignment = alignment,
-                            contentScale = contentScale,
-                            alpha = alpha,
-                            colorFilter = colorFilter
-                        )
-                    }
+                    val painter = successPainter(action) ?: return@AutoSizeBox
+                    Image(
+                        painter = painter,
+                        contentDescription = contentDescription,
+                        modifier = Modifier.fillMaxSize(),
+                        alignment = alignment,
+                        contentScale = contentScale,
+                        alpha = alpha,
+                        colorFilter = colorFilter
+                    )
                 }
                 is ImageResult.OfError, is ImageResult.OfSource -> {
                     isLoading = false
@@ -190,11 +164,25 @@ fun AutoSizeImageWithLoading(
                         )
                     }
                 }
+                else -> Unit
             }
         }
-        
+
         if (isLoading && loadingIndicator != null) {
             loadingIndicator()
         }
+    }
+}
+
+private fun successPainter(action: ImageAction.Success): Painter? {
+    return when (action) {
+        is ImageResult.OfPainter -> action.painter
+        is ImageResult.OfBitmap -> action.bitmap.toPainter()
+        is ImageResult.OfImage -> {
+            // Skia Image → Bitmap → Painter
+            val bitmap = org.jetbrains.skia.Bitmap.makeFromImage(action.image)
+            bitmap.toPainter()
+        }
+        else -> null
     }
 }

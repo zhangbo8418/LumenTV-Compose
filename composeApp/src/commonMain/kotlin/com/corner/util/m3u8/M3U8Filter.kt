@@ -159,12 +159,12 @@ class M3U8Filter(
                                 if (i + 3 < lines.size && lines[i + 3].startsWith("#EXT-X-DISCONTINUITY")) {
                                     filteredAdCount++
                                     // 打印即将过滤的行
-                                    log.info("过滤规则: #EXT-X-DISCONTINUITY-ts文件名长度-, 过滤内容: $line | ${lines[i+1]} | ${lines[i+2]}")
+                                    log.debug("过滤规则: #EXT-X-DISCONTINUITY-ts文件名长度-, 过滤内容: $line | ${lines[i+1]} | ${lines[i+2]}")
                                     i += 4
                                 } else {
                                     filteredAdCount++
                                     // 打印即将过滤的行
-                                    log.info("过滤规则: #EXT-X-DISCONTINUITY-ts文件名长度, 过滤内容: $line | ${lines[i+1]} | ${lines[i+2]}")
+                                    log.debug("过滤规则: #EXT-X-DISCONTINUITY-ts文件名长度, 过滤内容: $line | ${lines[i+1]} | ${lines[i+2]}")
                                     i += 3
                                 }
                                 continue
@@ -180,12 +180,12 @@ class M3U8Filter(
                                 if (i + 3 < lines.size && lines[i + 3].startsWith("#EXT-X-DISCONTINUITY")) {
                                     filteredAdCount++
                                     // 打印即将过滤的行
-                                    log.info("过滤规则: #EXT-X-DISCONTINUITY-ts序列号-, 过滤内容: $line | ${lines[i+1]} | ${lines[i+2]} | ${lines[i+3]}")
+                                    log.debug("过滤规则: #EXT-X-DISCONTINUITY-ts序列号-, 过滤内容: $line | ${lines[i+1]} | ${lines[i+2]} | ${lines[i+3]}")
                                     i += 4
                                 } else {
                                     filteredAdCount++
                                     // 打印即将过滤的行
-                                    log.info("过滤规则: #EXT-X-DISCONTINUITY-ts序列号, 过滤内容: $line | ${lines[i+1]} | ${lines[i+2]} | ${lines[i+3]}")
+                                    log.debug("过滤规则: #EXT-X-DISCONTINUITY-ts序列号, 过滤内容: $line | ${lines[i+1]} | ${lines[i+2]} | ${lines[i+3]}")
                                     i += 3
                                 }
                                 continue
@@ -204,12 +204,12 @@ class M3U8Filter(
                             if (i + 2 < lines.size && lines[i + 2].startsWith("#EXT-X-DISCONTINUITY")) {
                                 filteredAdCount++
                                 // 打印即将过滤的行
-                                log.info("过滤规则: #EXTINF-ts文件名长度-, 过滤内容: $line | ${lines[i+1]} | ${lines[i+2]}")
+                                log.debug("过滤规则: #EXTINF-ts文件名长度-, 过滤内容: $line | ${lines[i+1]} | ${lines[i+2]}")
                                 i += 3
                             } else {
                                 filteredAdCount++
                                 // 打印即将过滤的行
-                                log.info("过滤规则: #EXTINF-ts文件名长度, 过滤内容: $line | ${lines[i+1]}")
+                                log.debug("过滤规则: #EXTINF-ts文件名长度, 过滤内容: $line | ${lines[i+1]}")
                                 i += 2
                             }
                             continue
@@ -227,12 +227,12 @@ class M3U8Filter(
                             if (i + 2 < lines.size && lines[i + 2].startsWith("#EXT-X-DISCONTINUITY")) {
                                 filteredAdCount++
                                 // 打印即将过滤的行
-                                log.info("过滤规则: #EXTINF-ts序列号-, 过滤内容: $line | ${lines[i+1]} | ${lines[i+2]}")
+                                log.debug("过滤规则: #EXTINF-ts序列号-, 过滤内容: $line | ${lines[i+1]} | ${lines[i+2]}")
                                 i += 3
                             } else {
                                 filteredAdCount++
                                 // 打印即将过滤的行
-                                log.info("过滤规则: #EXTINF-ts序列号, 过滤内容: $line | ${lines[i+1]}")
+                                log.debug("过滤规则: #EXTINF-ts序列号, 过滤内容: $line | ${lines[i+1]}")
                                 i += 2
                             }
                             continue
@@ -271,12 +271,12 @@ class M3U8Filter(
                             if (i + 3 < lines.size && lines[i + 3].startsWith("#EXT-X-DISCONTINUITY") && theExtXDiscontinuityConditionFlag) {
                                 filteredAdCount++
                                 // 打印即将过滤的行
-                                log.info("过滤规则: #EXT-X-DISCONTINUITY-广告-#EXT-X-DISCONTINUITY过滤, 过滤内容: $line | ${lines[i+1]} | ${lines[i+2]} | ${lines[i+3]}")
+                                log.debug("过滤规则: #EXT-X-DISCONTINUITY-广告-#EXT-X-DISCONTINUITY过滤, 过滤内容: $line | ${lines[i+1]} | ${lines[i+2]} | ${lines[i+3]}")
                                 i += 4 // 跳过当前行和接下来的三行
                             } else {
                                 filteredAdCount++
                                 // 打印即将过滤的行
-                                log.info("过滤规则: #EXT-X-DISCONTINUITY-单个标识过滤, 过滤内容: $line")
+                                log.debug("过滤规则: #EXT-X-DISCONTINUITY-单个标识过滤, 过滤内容: $line")
                                 i++
                             }
                             continue
@@ -294,7 +294,7 @@ class M3U8Filter(
                     } else {
                         filteredAdCount++
                         // 打印即将过滤的行
-                        log.info("过滤规则: #EXT-X-DISCONTINUITY-单个标识过滤, 过滤内容: $line")
+                        log.debug("过滤规则: #EXT-X-DISCONTINUITY-单个标识过滤, 过滤内容: $line")
                         i++
                         continue
                     }

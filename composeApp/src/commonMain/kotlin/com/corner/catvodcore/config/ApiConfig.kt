@@ -6,8 +6,14 @@ import com.corner.util.settings.SettingType
 import com.corner.catvodcore.bean.Rule
 import com.corner.catvodcore.bean.Site
 import com.corner.catvodcore.bean.Api
+import com.corner.catvodcore.bean.Parse
 import com.corner.catvodcore.config.ApiConfig.api
 import com.corner.catvodcore.enum.ConfigType
+import com.corner.catvodcore.live.LiveConfig
+import com.corner.catvodcore.config.ParseConfig
+import com.corner.catvodcore.config.WallConfig
+import com.corner.catvodcore.config.ConfigDepot
+import com.corner.catvodcore.loader.BaseLoader
 import com.corner.catvodcore.loader.JarLoader
 import com.corner.util.net.Http
 import com.corner.util.json.Jsons
@@ -50,63 +56,131 @@ object ApiConfig {
 
     fun clear() {
         apiFlow.value = Api(spider = "")
+        ParseConfig.clear()
+    }
+
+    fun applySnapshot(snapshot: Api, home: Site) {
+        apiFlow.value = snapshot
+        api = snapshot
+        GlobalAppState.home.value = home
+        if (snapshot.spider.isNotBlank()) {
+            runCatching { BaseLoader.parseJar(snapshot.spider, false) }
+        }
+        runCatching { ParseConfig.init(snapshot.parses, snapshot.cfg?.parse) }
+        runCatching { WallConfig.init(snapshot.wallpaper) }
     }
 
     fun parseConfig(
         cfg: Config,
         isJson: Boolean,
-        onSuccess: () -> Unit,
-        onError: (Throwable) -> Unit
-    ): Api {
+        onSuccess: () -> Unit = {},
+        onError: (Throwable) -> Unit = {},
+    ): Boolean {
         return try {
             log.info("解析配置开始, cfg:{} isJson:{}", cfg, isJson)
 
-            val data = getData(if (isJson) cfg.json ?: "" else cfg.url!!, isJson)
-                ?: throw RuntimeException("配置读取异常")
-
-            if (StringUtils.isBlank(data)) {
-                SnackBar.postMsg("配置数据为空,请检查配置文件", type = SnackBar.MessageType.WARNING)
-                setHome(null)
-                throw NoStackTraceException("配置数据为空")
+            val source = if (isJson) cfg.json.orEmpty() else cfg.url.orEmpty()
+            if (!isJson && source.isBlank()) {
+                val error = NoStackTraceException("点播源地址无效")
+                SnackBar.postMsg("点播源地址无效", type = SnackBar.MessageType.ERROR)
+                onError(error)
+                return false
             }
 
-            // 清理JSON中的注释
-            val cleanedData = cleanJsonComments(data)
-            val apiConfig = Jsons.decodeFromString<Api>(cleanedData)
-            val updatedApi = apiConfig.copy(url = cfg.url, data = data, cfg = cfg, ref = apiConfig.ref + 1)
-            apiFlow.update { updatedApi }
+            val data = getData(source, isJson).orEmpty()
+            if (StringUtils.isBlank(data)) {
+                val error = NoStackTraceException("配置数据为空")
+                SnackBar.postMsg("配置数据为空，请检查配置文件或链接", type = SnackBar.MessageType.WARNING)
+                onError(error)
+                return false
+            }
 
+            val cleanedData = cleanJsonComments(data)
+            ConfigDepot.resolve(cleanedData, cfg.url)?.let { depotCfg ->
+                log.info("检测到仓库索引，展开首个地址: {}", depotCfg.url)
+                depotCfg.url?.takeIf { it.isNotBlank() }?.let {
+                    SettingStore.setValue(SettingType.VOD, it)
+                }
+                return parseConfig(depotCfg, isJson = false, onSuccess, onError)
+            }
+
+            val apiConfig = Jsons.decodeFromString<Api>(cleanedData)
+            if (apiConfig.sites.isEmpty()) {
+                val error = NoStackTraceException("站点列表为空")
+                SnackBar.postMsg("配置中没有可用站点", type = SnackBar.MessageType.WARNING)
+                onError(error)
+                return false
+            }
+
+            val logoRaw = apiConfig.logo?.takeIf { it.isNotBlank() && !it.contains("{") }
+                ?: extractRootString(cleanedData, "logo")
+            val resolvedLogo = resolveConfigAsset(cfg.url, logoRaw)
+            val updatedApi = apiConfig.copy(
+                url = cfg.url,
+                data = data,
+                cfg = cfg,
+                ref = apiConfig.ref + 1,
+                logo = resolvedLogo,
+            )
+            apiFlow.update { updatedApi }
             api = updatedApi
 
-            JarLoader.loadJar("", apiConfig.spider)
+            BaseLoader.parseJar(apiConfig.spider, true)
+            ParseConfig.init(apiConfig.parses, cfg.parse)
 
-            if (cfg.home?.isNotBlank() == true) {
-                setHome(api.sites.find { it.key == cfg.home })
+            val homeSite = if (cfg.home?.isNotBlank() == true) {
+                api.sites.find { it.key == cfg.home }
             } else {
-                setHome(api.sites.first())
+                api.sites.firstOrNull()
             }
+            setHome(homeSite)
 
             scope.launch {
                 api.sites = Db.Site.update(cfg, api)
+                LiveConfig.syncFromApi()
             }
+
+            WallConfig.init(api.wallpaper)
+            log.info("仓库头像: {}", resolvedLogo ?: "(无)")
 
             log.info("解析配置结束")
             onSuccess()
-            apiConfig
+            true
         } catch (e: Exception) {
             log.error("解析配置失败", e)
+            SnackBar.postMsg("配置解析失败: ${e.message}", type = SnackBar.MessageType.ERROR)
             onError(e)
-            throw e
+            false
         }
+    }
+
+    /** 相对资源按点播基址解析；含 `{` 的模板（如直播 logo）不算仓库头像 */
+    private fun resolveConfigAsset(baseUrl: String?, raw: String?): String? {
+        val value = raw?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        if (value.contains("{")) return null
+        if (value.startsWith("http", ignoreCase = true) || value.startsWith("file", ignoreCase = true)) {
+            return com.corner.util.io.Urls.convert(value).ifBlank { value }
+        }
+        val base = baseUrl?.takeIf { it.isNotBlank() } ?: return value
+        return com.corner.util.io.Urls.convert(base, value).ifBlank { value }
+    }
+
+    /** 部分仓库 JSON 结构不规范时，kotlinx 可能丢字段，用正则兜底取根级字符串 */
+    private fun extractRootString(raw: String, key: String): String? {
+        val matches = Regex(""""$key"\s*:\s*"([^"]+)"""").findAll(raw).map { it.groupValues[1] }.toList()
+        return matches.lastOrNull { !it.contains("{") }
     }
 
     fun setHome(home: Site?) {
         GlobalAppState.home.value = home ?: Site.get("", "")
     }
 
+    fun setParse(parse: Parse) {
+        ParseConfig.setParse(parse)
+    }
+
     fun getSpider(site: Site): Spider {
-        val csp: Boolean = site.api.startsWith("csp_")
-        return if (csp) JarLoader.getSpider(site.key, site.api, site.ext, site.jar ?: "") else Spider()
+        return BaseLoader.getSpider(site.key, site.api, site.ext ?: "", site.jar ?: "")
     }
 
     fun getSite(key: String): Site? {
@@ -115,10 +189,7 @@ object ApiConfig {
 
     fun setRecent(site: Site) {
         api.recent = site.key
-        val csp: Boolean = site.api.startsWith("csp_")
-        if (csp) JarLoader.setRecentJar(
-            site.jar
-        )
+        BaseLoader.setRecent(site.key, site.api, site.jar)
     }
 
     fun parseExt(ext: String): String {
@@ -143,10 +214,18 @@ object ApiConfig {
         throw IllegalStateException("Failed to parseExt after $maxAttempts attempts")
     }
 
-    fun parseApi(str: String): String {
+    fun parseApi(str: String, base: String? = null): String {
         if (StringUtils.isBlank(str)) return ""
         if (str.startsWith("http") || str.startsWith("file")) return str
-        if (str.endsWith(".js")) return parseApi(Urls.convert(api.url ?: "", str))
+        if (str.endsWith(".js") || str.endsWith(".py")) {
+            val resolveBase = base?.takeIf { it.isNotBlank() }
+                ?: api.spider.takeIf { it.isNotBlank() }
+                ?: api.url.orEmpty()
+            if (resolveBase.isNotBlank()) {
+                val resolved = Urls.convert(resolveBase, str)
+                if (resolved.isNotBlank()) return resolved
+            }
+        }
         return str
     }
 
@@ -234,11 +313,12 @@ fun Api.init() {
 fun Api.initSite() {
     if (sites.isEmpty()) return
     for (site in sites) {
-        site.api = ApiConfig.parseApi(site.api)
+        val jarBase = site.jar?.takeIf { it.isNotBlank() } ?: api.spider
+        site.api = ApiConfig.parseApi(site.api, jarBase)
         site.ext = ApiConfig.parseExt(site.ext)
     }
     if (GlobalAppState.home.value.isEmpty() && sites.isNotEmpty()) {
-        GlobalAppState.home.value = sites.first()
+        GlobalAppState.home.value = sites.firstOrNull { !it.isHide() } ?: sites.first()
         SiteViewModel.viewModelScope.launch {
             Db.Config.setHome(url, ConfigType.SITE.ordinal, GlobalAppState.home.value.toString())
         }

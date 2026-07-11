@@ -21,12 +21,30 @@ object ToStringSerializer: JsonTransformingSerializer<String>(String.serializer(
     }
 }
 
-object JsonStrToMapSerializer: JsonTransformingSerializer<Map<String, String>>(MapSerializer(String.serializer(),String.serializer())) {
+object JsonStrToMapSerializer :
+    JsonTransformingSerializer<Map<String, String>>(MapSerializer(String.serializer(), String.serializer())) {
     override fun transformDeserialize(element: JsonElement): JsonElement {
-        println(element.jsonPrimitive.content)
-        return Jsons.parseToJsonElement(element.jsonPrimitive.content)
+        val obj = when (element) {
+            is JsonObject -> element
+            is JsonPrimitive -> runCatching {
+                Jsons.parseToJsonElement(element.content).jsonObject
+            }.getOrNull()
+
+            else -> null
+        } ?: return buildJsonObject { }
+        return buildJsonObject {
+            obj.forEach { (key, value) ->
+                put(key, jsonValueToString(value))
+            }
+        }
     }
 
+    private fun jsonValueToString(value: JsonElement): String {
+        return when (value) {
+            is JsonPrimitive -> value.contentOrNull ?: value.toString().trim('"')
+            else -> value.toString()
+        }
+    }
 }
 
 /**

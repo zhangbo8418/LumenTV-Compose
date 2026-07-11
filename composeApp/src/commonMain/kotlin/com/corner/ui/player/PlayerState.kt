@@ -3,6 +3,8 @@ package com.corner.ui.player
 data class PlayerState(
     val state:PlayState = PlayState.PAUSE,
     val bufferProgression: Float = 0.0f,
+    /** 缓冲时网速文案，如 "120 KB/s"（对齐 TV Traffic） */
+    val trafficSpeed: String = "",
     val isMuted: Boolean = false,
     var isFullScreen: Boolean = false,
     val volume: Float = .5f,

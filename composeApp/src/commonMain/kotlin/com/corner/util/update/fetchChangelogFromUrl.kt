@@ -5,12 +5,12 @@ import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 
 suspend fun fetchChangelogFromUrl(url: String): String {
-    // 使用带代理配置的HTTP客户端
     val client = KtorClient.createHttpClient()
-    try {
-        val response = client.get(url)
-        return response.bodyAsText()
+    return try {
+        client.get(url).bodyAsText()
+    } catch (e: Exception) {
+        "无法获取更新日志: ${e.message}"
     } finally {
-        client.close()
+        runCatching { client.close() }
     }
 }

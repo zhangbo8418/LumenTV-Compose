@@ -24,7 +24,7 @@ class CustomDirectoryDiscovery:DiscoveryDirectoryProvider {
             log.debug("resPath: $this")
             arrayOf.add(this.trimBlankChar() + "/lib")
         }
-        val debugPath = File(System.getProperty("user.dir")).resolve("src/desktopMain/appResources/${SysVerUtil.getOsArchName()}/lib")
+        val debugPath = File(System.getProperty("user.dir")).resolve("src/desktopMain/appResources/${SysVerUtil.getAppResourcesPlatform()}/lib")
         if(StringUtils.isNotBlank(debugPath.toString())){
             arrayOf.add(debugPath.toString())
         }
