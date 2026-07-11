@@ -74,6 +74,45 @@ public class Util {
         notify(msg);
     }
 
+    /** 兜底；jar 子优先加载时通常走 jar 内完整实现 */
+    public static java.util.HashMap<String, String> webHeaders(String url) {
+        java.util.HashMap<String, String> headers = new java.util.HashMap<>();
+        headers.put("User-Agent", CHROME);
+        if (StringUtils.isNotBlank(url)) {
+            try {
+                java.net.URI uri = java.net.URI.create(url);
+                String host = uri.getHost();
+                if (host != null) {
+                    String scheme = uri.getScheme() != null ? uri.getScheme() : "https";
+                    headers.put("Referer", scheme + "://" + host + "/");
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return headers;
+    }
+
+    public static java.util.HashMap<String, String> webHeaders(String url, String referer) {
+        java.util.HashMap<String, String> headers = webHeaders(url);
+        if (StringUtils.isNotBlank(referer)) headers.put("Referer", referer);
+        return headers;
+    }
+
+    public static java.util.HashMap<String, String> webHeaders(String url, String referer, String cookie) {
+        java.util.HashMap<String, String> headers = webHeaders(url, referer);
+        if (StringUtils.isNotBlank(cookie)) headers.put("Cookie", cookie);
+        return headers;
+    }
+
+    public static String stringJoin(String delimiter, java.util.Collection<String> elements) {
+        if (elements == null || elements.isEmpty()) return "";
+        return String.join(delimiter == null ? "" : delimiter, elements);
+    }
+
+    public static String stringJoin(java.util.Collection<String> elements, String delimiter) {
+        return stringJoin(delimiter, elements);
+    }
+
     private static String getHostAddress(String keyword) throws Exception {
         Enumeration<NetworkInterface> en = NetworkInterface.getNetworkInterfaces();
         while (en.hasMoreElements()) {

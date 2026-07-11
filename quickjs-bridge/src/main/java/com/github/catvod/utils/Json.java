@@ -58,4 +58,23 @@ public class Json {
         }
         return map;
     }
+
+    /** spider.jar 常用；子优先 ClassLoader 下一般走 jar 内实现，此处作兜底 */
+    public static String toJson(Object obj) {
+        try {
+            return new com.google.gson.Gson().toJson(obj);
+        } catch (Throwable e) {
+            return obj == null ? "null" : String.valueOf(obj);
+        }
+    }
+
+    public static JsonObject safeObject(String json) {
+        try {
+            if (StringUtils.isBlank(json)) return new JsonObject();
+            JsonElement el = parse(json);
+            return el != null && el.isJsonObject() ? el.getAsJsonObject() : new JsonObject();
+        } catch (Throwable e) {
+            return new JsonObject();
+        }
+    }
 }
