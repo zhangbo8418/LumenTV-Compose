@@ -84,6 +84,51 @@ public class Prefers {
         }
     }
 
+    public static int getInt(String key) {
+        return getInt(key, 0);
+    }
+
+    public static int getInt(String key, int defaultValue) {
+        try {
+            return Integer.parseInt(getString(key, String.valueOf(defaultValue)));
+        } catch (Exception e) {
+            return defaultValue;
+        }
+    }
+
+    public static long getLong(String key) {
+        return getLong(key, 0L);
+    }
+
+    public static long getLong(String key, long defaultValue) {
+        try {
+            return Long.parseLong(getString(key, String.valueOf(defaultValue)));
+        } catch (Exception e) {
+            return defaultValue;
+        }
+    }
+
+    public static float getFloat(String key) {
+        return getFloat(key, 0f);
+    }
+
+    public static float getFloat(String key, float defaultValue) {
+        try {
+            return Float.parseFloat(getString(key, String.valueOf(defaultValue)));
+        } catch (Exception e) {
+            return defaultValue;
+        }
+    }
+
+    public static boolean getBoolean(String key) {
+        return getBoolean(key, false);
+    }
+
+    public static boolean getBoolean(String key, boolean defaultValue) {
+        String v = getString(key, String.valueOf(defaultValue));
+        return "true".equalsIgnoreCase(v) || "1".equals(v);
+    }
+
     public static void put(String key, Object obj) {
         if (obj == null) return;
         synchronized (lock) {

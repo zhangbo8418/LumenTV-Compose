@@ -17,52 +17,14 @@ import kotlinx.coroutines.launch
 import org.apache.commons.lang3.StringUtils
 import java.io.File
 import java.lang.reflect.Method
-import java.net.URL
 import java.net.URLClassLoader
 import java.util.concurrent.ConcurrentHashMap
-
-/**
- * 对 spider.jar 子优先：jar 内 Util/Json 等完整实现优先于宿主精简 stub，
- * 避免 NoSuchMethodError（父优先会盖住 jar 自带的 webHeaders/toJson/showDialog 等）。
- * crawler 基类仍走父加载器，保证与宿主 Spider 类型一致。
- */
-private class SpiderJarClassLoader(
-    urls: Array<URL>,
-    parent: ClassLoader,
-) : URLClassLoader(urls, parent) {
-    override fun loadClass(name: String, resolve: Boolean): Class<*> {
-        if (name.startsWith("java.") ||
-            name.startsWith("javax.") ||
-            name.startsWith("jdk.") ||
-            name.startsWith("sun.") ||
-            name.startsWith("com.github.catvod.crawler.")
-        ) {
-            return super.loadClass(name, resolve)
-        }
-        synchronized (getClassLoadingLock(name)) {
-            findLoadedClass(name)?.let {
-                if (resolve) resolveClass(it)
-                return it
-            }
-            try {
-                val c = findClass(name)
-                if (resolve) resolveClass(c)
-                return c
-            } catch (_: ClassNotFoundException) {
-                // fall through to parent
-            }
-            val c = parent.loadClass(name)
-            if (resolve) resolveClass(c)
-            return c
-        }
-    }
-}
 
 object JarLoader {
     private val log = thisLogger()
 
     /**
-     * jar包加载器
+     * jar包加载器（对齐 TV：父优先 URLClassLoader，宿主 catvod API 覆盖 jar 内同名类）
      * */
     private val loaders: ConcurrentHashMap<String, URLClassLoader> by lazy { ConcurrentHashMap() }
 
@@ -195,7 +157,7 @@ object JarLoader {
      */
     private fun load(key: String, jar: File) {
         log.debug("load jar {},jaKey {}", jar, key)
-        loaders[key] = SpiderJarClassLoader(arrayOf(jar.toURI().toURL()), this.javaClass.classLoader)
+        loaders[key] = URLClassLoader(arrayOf(jar.toURI().toURL()), this.javaClass.classLoader)
         putProxy(key)
         invokeInit(key)
     }
