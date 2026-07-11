@@ -42,6 +42,7 @@ class PySpiderProcess(
     }
     @Volatile
     private var destroyed = false
+    private val recentStderr = java.util.Collections.synchronizedList(mutableListOf<String>())
 
     companion object {
         private const val CALL_TIMEOUT_SECONDS = 45L
@@ -62,9 +63,14 @@ class PySpiderProcess(
             put("LUMEN_PY_CACHE", cacheDir.absolutePath)
             put("PYTHONUNBUFFERED", "1")
             put("PYTHONUTF8", "1")
+            put("PYTHONIOENCODING", "utf-8")
             python.home?.let { home ->
-                put("PYTHONHOME", home.absolutePath)
-                // 捆绑 Python 目录 + JDK bin（Win10 兼容库，供 Win7 复用）优先于系统 PATH
+                // Embed（python3xx._pth / python3xx.zip）不能设 PYTHONHOME，否则会找不到 encodings 立刻退出
+                if (python.embed) {
+                    log.info("捆绑 Python 为 embed 布局，跳过 PYTHONHOME: {}", home.absolutePath)
+                } else {
+                    put("PYTHONHOME", home.absolutePath)
+                }
                 val pathKey = keys.firstOrNull { it.equals("PATH", ignoreCase = true) } ?: "PATH"
                 val oldPath = this[pathKey].orEmpty()
                 val prepend = buildList {
@@ -72,6 +78,7 @@ class PySpiderProcess(
                     File(home, "Scripts").takeIf { it.isDirectory }?.absolutePath?.let(::add)
                     File(home, "bin").takeIf { it.isDirectory }?.absolutePath?.let(::add)
                     File(home, "DLLs").takeIf { it.isDirectory }?.absolutePath?.let(::add)
+                    File(home, "Lib/site-packages").takeIf { it.isDirectory }?.absolutePath?.let(::add)
                     File(System.getProperty("java.home"), "bin").takeIf { it.isDirectory }?.absolutePath?.let(::add)
                 }
                 this[pathKey] = (prepend + oldPath).filter { it.isNotBlank() }.joinToString(File.pathSeparator)
@@ -87,6 +94,10 @@ class PySpiderProcess(
         writer = BufferedWriter(OutputStreamWriter(process.outputStream, StandardCharsets.UTF_8))
         reader = BufferedReader(InputStreamReader(process.inputStream, StandardCharsets.UTF_8))
         startStderrDrainer()
+        // 给 stderr 线程一点时间；若进程已秒退，立刻带上退出码
+        if (!process.isAlive) {
+            throw IllegalStateException(buildProcessDeadMessage("启动后立即退出"))
+        }
         init(ext)
     }
 
@@ -109,7 +120,12 @@ class PySpiderProcess(
             BufferedReader(InputStreamReader(stderr, StandardCharsets.UTF_8)).use { err ->
                 var line = err.readLine()
                 while (line != null) {
-                    log.debug("[py:{}] {}", key, line)
+                    // INFO 级别也要能看见，否则 Win7 秒退时无从排查
+                    log.warn("[py:{}] {}", key, line)
+                    synchronized(recentStderr) {
+                        recentStderr.add(line)
+                        while (recentStderr.size > 40) recentStderr.removeAt(0)
+                    }
                     line = err.readLine()
                 }
             }
@@ -119,7 +135,29 @@ class PySpiderProcess(
         }
     }
 
-    private data class PythonRuntime(val exe: String, val home: File?)
+    private fun buildProcessDeadMessage(prefix: String): String {
+        val code = try {
+            if (process.isAlive) -1 else process.exitValue()
+        } catch (_: Exception) {
+            -1
+        }
+        val stderr = synchronized(recentStderr) { recentStderr.takeLast(12).joinToString(" | ") }
+        return buildString {
+            append(prefix)
+            if (code >= 0) append(" (exit=$code)")
+            if (stderr.isNotBlank()) append(": ").append(stderr)
+            else append("（无 stderr，常见原因：对 embed Python 误设 PYTHONHOME）")
+        }
+    }
+
+    private data class PythonRuntime(val exe: String, val home: File?, val embed: Boolean)
+
+    private fun isEmbedLayout(home: File?): Boolean {
+        if (home == null || !home.isDirectory) return false
+        val names = home.list()?.toList().orEmpty()
+        return names.any { it.matches(Regex("python\\d+\\._pth", RegexOption.IGNORE_CASE)) } ||
+            names.any { it.matches(Regex("python\\d+\\.zip", RegexOption.IGNORE_CASE)) }
+    }
 
     private fun findPython(): PythonRuntime {
         for (candidate in bundledPythonCandidates()) {
@@ -127,16 +165,17 @@ class PySpiderProcess(
             ensureExecutable(candidate)
             if (probePython(candidate.absolutePath)) {
                 log.info("使用捆绑 Python: {}", candidate.absolutePath)
-                return PythonRuntime(candidate.absolutePath, candidate.parentFile.let { parent ->
+                val home = candidate.parentFile.let { parent ->
                     // bin/python3 → home 为 python 根目录
                     if (parent?.name == "bin") parent.parentFile else parent
-                })
+                }
+                return PythonRuntime(candidate.absolutePath, home, isEmbedLayout(home))
             }
         }
         listOf("python3", "python").forEach { cmd ->
             if (probePython(cmd)) {
                 log.info("使用系统 Python: {}", cmd)
-                return PythonRuntime(cmd, null)
+                return PythonRuntime(cmd, null, false)
             }
         }
         throw IllegalStateException("未找到捆绑或系统 Python，请安装 Python 3 或执行 ./gradlew prepareBundledPython")
@@ -253,7 +292,7 @@ class PySpiderProcess(
         writer.write(gson.toJson(payload))
         writer.newLine()
         writer.flush()
-        val line = readJsonLine() ?: throw IllegalStateException("python process closed")
+        val line = readJsonLine() ?: throw IllegalStateException(buildProcessDeadMessage("python process closed"))
         val type = object : TypeToken<Map<String, Any>>() {}.type
         val resp: Map<String, Any> = gson.fromJson(line, type)
         if (resp["ok"] != true) {
