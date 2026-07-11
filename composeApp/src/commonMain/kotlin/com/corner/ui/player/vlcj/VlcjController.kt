@@ -145,9 +145,12 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
      * 从独立线程 stop，打断可能卡住的 native play。
      */
     private val abortEpoch = AtomicInteger(0)
+    @Volatile
+    private var lastAbortAtMs: Long = 0L
 
     private fun abortStuckVlcLoad(reason: String) {
         abortEpoch.incrementAndGet()
+        lastAbortAtMs = System.currentTimeMillis()
         currentLoadFuture = null
         Thread({
             try {
@@ -343,6 +346,11 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
                 log.debug("正在切换线路，跳过自动换线")
                 return
             }
+            // 换集/换线 abort 后的 finished 常会秒停，勿当播放失败
+            if (System.currentTimeMillis() - lastAbortAtMs < 2_000L) {
+                log.debug("刚中断加载后的 finished，跳过自动换线")
+                return
+            }
 
             // 换集后秒停：按播放失败处理，走 TV 同款 fallback
             if (playDuration < decodeFailureTureShould) {
@@ -453,29 +461,16 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
 
 
         override fun error(mediaPlayer: MediaPlayer?) {
-            log.error("播放错误: ${mediaPlayer?.media()?.info()?.mrl()}")
+            // 仅做轻量状态更新；禁止在此线程同步 stop / 换线（易与 libvlc 死锁导致整窗卡死）
+            val mrl = runCatching { mediaPlayer?.media()?.info()?.mrl() }.getOrNull().orEmpty()
+            log.error("播放错误: {}", mrl)
+            playerPlaying = false
+            playerLoading = false
+            stopTrafficMonitor()
             _state.update { it.copy(state = PlayState.ERROR, msg = "播放错误") }
-            vm.playbackError("播放错误")
             scope.launch {
-                history.value?.let { vm.updateHistory(it) }
-                try {
-                    if (checkEnd(mediaPlayer)) {
-                        return@launch
-                    }
-                } catch (e: Exception) {
-                    log.error("error ", e)
-                }
-            }
-            super.error(mediaPlayer)
-        }
-
-        private fun checkEnd(mediaPlayer: MediaPlayer?): Boolean {
-            try {
-                log.info("playable: " + mediaPlayer?.status()?.isPlayable)
-                return mediaPlayer?.status()?.isPlayable == false
-            } catch (e: Exception) {
-                log.error("checkEnd error:", e)
-                return false
+                runCatching { history.value?.let { vm.updateHistory(it) } }
+                vm.playbackError("播放错误")
             }
         }
     }

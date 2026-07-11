@@ -81,17 +81,20 @@ class VlcjFrameController(
         frameRenderer.clearFrameSoft()
     }
 
-    /** 换集：清画面 + 打断卡住的 VLC 加载 */
+    /** 换集：先停渲染再打断 VLC，避免 display 回调与 stop 互锁卡死 UI */
     suspend fun stopForRefreshAndAwait() {
+        frameRenderer.pauseRendering()
         frameRenderer.clearFrameSoft()
-        frameRenderer.resumeRendering()
         controller.stopForRefresh()
+        // 给 vlc-abort 一点时间离开 native，再绑回 surface
+        delay(50)
         attachVideoSurface()
+        frameRenderer.resumeRendering()
     }
 
     fun stopForRefresh() {
+        frameRenderer.pauseRendering()
         frameRenderer.clearFrameSoft()
-        frameRenderer.resumeRendering()
         controller.stopForRefresh()
     }
 

@@ -129,7 +129,7 @@ enum class SettingsCategory(
     VOD("点播", Icons.Filled.LiveTv),
     PLAYER("播放器", Icons.Filled.PlayCircle),
     NETWORK("网络", Icons.Filled.SystemUpdate),
-    PLAYWRIGHT("自动化", Icons.Filled.Web),
+    PLAYWRIGHT("浏览器", Icons.Filled.Web),
     ADVANCED("高级", Icons.Filled.Code),
     ABOUT("关于", Icons.Filled.Info),
 }
@@ -309,7 +309,7 @@ fun WindowScope.SettingScene(vm: SettingViewModel, config: M3U8FilterConfig, onC
                             modifier = Modifier.fillMaxSize()
                         )
 
-                        SettingsCategory.PLAYWRIGHT -> PlaywrightSettingsContent(
+                        SettingsCategory.PLAYWRIGHT -> JcefSettingsContent(
                             modifier = Modifier.fillMaxSize()
                         )
 
@@ -2378,242 +2378,179 @@ fun resetDohSetting() {
 }
 
 /**
- * Playwright 浏览器设置页面
+ * JCEF 内嵌浏览器设置（对齐 TV WebView）
  */
 @Composable
-fun PlaywrightSettingsContent(
-    modifier: Modifier = Modifier
+fun JcefSettingsContent(
+    modifier: Modifier = Modifier,
 ) {
     var isBrowserAvailable by remember { mutableStateOf(false) }
-    var browserPath by remember { mutableStateOf("") }
-    var cacheDir by remember { mutableStateOf("") }
-    var tempDir by remember { mutableStateOf("") }
+    var installDir by remember { mutableStateOf("") }
     var showClearCacheDialog by remember { mutableStateOf(false) }
     var showDownloadDialog by remember { mutableStateOf(false) }
     var isDownloading by remember { mutableStateOf(false) }
     var downloadProgress by remember { mutableStateOf(0f) }
     val scope = rememberCoroutineScope()
-    
-    // 更新浏览器状态的函数
+
     fun updateBrowserStatus() {
-        isBrowserAvailable = com.corner.util.playwright.PlaywrightBrowserManager.isBrowserAvailable()
-        browserPath = com.corner.util.playwright.PlaywrightBrowserManager.getBrowserExecutablePath()
-        cacheDir = com.corner.util.playwright.PlaywrightBrowserManager.getBrowserCacheDir()
-        tempDir = com.corner.util.playwright.PlaywrightBrowserManager.getTempDir()
+        isBrowserAvailable = com.corner.util.jcef.JcefBrowserManager.isAvailable() ||
+            com.corner.util.jcef.JcefBrowserManager.isNativeInstalled()
+        installDir = com.corner.util.jcef.JcefBrowserManager.getInstallDir().absolutePath
     }
-    
-    // 加载浏览器状态
-    LaunchedEffect(Unit) {
-        updateBrowserStatus()
-    }
-    
+
+    LaunchedEffect(Unit) { updateBrowserStatus() }
+
     fun startDownload() {
         showDownloadDialog = false
         isDownloading = true
         downloadProgress = 0f
-        
         scope.launch {
-            val result = com.corner.util.playwright.PlaywrightBrowserManager.ensureBrowserDownloaded {
-                progress ->
+            val result = com.corner.util.jcef.JcefBrowserManager.ensureReady { progress ->
                 downloadProgress = progress.toFloat()
             }
-            
             isDownloading = false
             if (result.isSuccess) {
-                SnackBar.postMsg("浏览器下载成功", type = SnackBar.MessageType.SUCCESS)
+                SnackBar.postMsg("内嵌浏览器就绪", type = SnackBar.MessageType.SUCCESS)
                 updateBrowserStatus()
             } else {
-                SnackBar.postMsg("浏览器下载失败: ${result.exceptionOrNull()?.message}", type = SnackBar.MessageType.ERROR)
+                SnackBar.postMsg(
+                    "浏览器准备失败: ${result.exceptionOrNull()?.message}",
+                    type = SnackBar.MessageType.ERROR,
+                )
             }
         }
     }
-    
+
     fun clearCache() {
         scope.launch {
-            val success = com.corner.util.playwright.PlaywrightBrowserManager.clearBrowserCache()
+            val success = com.corner.util.jcef.JcefBrowserManager.clearInstall()
             if (success) {
-                SnackBar.postMsg("缓存已清除", type = SnackBar.MessageType.SUCCESS)
+                SnackBar.postMsg("已清除 JCEF 文件", type = SnackBar.MessageType.SUCCESS)
                 updateBrowserStatus()
             } else {
-                SnackBar.postMsg("清除缓存失败", type = SnackBar.MessageType.ERROR)
+                SnackBar.postMsg("清除失败", type = SnackBar.MessageType.ERROR)
             }
             showClearCacheDialog = false
         }
     }
-    
+
     LazyColumn(
         modifier = modifier.padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {
-            SettingCard(
-                title = "Playwright 浏览器状态",
-                icon = Icons.Default.Web
-            ) {
+            SettingCard(title = "内嵌浏览器（JCEF）", icon = Icons.Default.Web) {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    // 状态指示器
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            text = "浏览器状态",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
+                        Text("浏览器状态", style = MaterialTheme.typography.bodyMedium)
                         Badge(
-                            containerColor = if (isBrowserAvailable) 
-                                MaterialTheme.colorScheme.primaryContainer 
-                            else 
+                            containerColor = if (isBrowserAvailable) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
                                 MaterialTheme.colorScheme.errorContainer
+                            },
                         ) {
                             Text(
                                 text = if (isBrowserAvailable) "已安装" else "未安装",
-                                color = if (isBrowserAvailable)
+                                color = if (isBrowserAvailable) {
                                     MaterialTheme.colorScheme.onPrimaryContainer
-                                else
+                                } else {
                                     MaterialTheme.colorScheme.onErrorContainer
+                                },
                             )
                         }
                     }
-                    
                     HorizontalDivider()
-                    
-                    // 浏览器路径
                     if (isBrowserAvailable) {
-                        InfoRow(label = "浏览器路径", value = browserPath)
-                        InfoRow(label = "缓存目录", value = cacheDir)
-                        InfoRow(label = "临时目录", value = tempDir)
+                        InfoRow(label = "安装目录", value = installDir)
                     } else {
                         Text(
-                            text = "Playwright 浏览器尚未安装。某些爬虫需要浏览器才能正常工作。",
+                            text = "尚未安装。网页解析（对齐 TV WebView）需要内嵌 Chromium。",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    
                     Spacer(modifier = Modifier.height(8.dp))
-                    
-                    // 操作按钮
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         if (!isBrowserAvailable) {
-                            Button(
-                                onClick = { showDownloadDialog = true },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Button(onClick = { showDownloadDialog = true }, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Default.Download, null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
                                 Text("下载浏览器")
                             }
                         } else {
-                            OutlinedButton(
-                                onClick = { showDownloadDialog = true },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+                            OutlinedButton(onClick = { showDownloadDialog = true }, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Default.Sync, null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
-                                Text("重新下载")
+                                Text("重新安装")
                             }
-                            
                             OutlinedButton(
                                 onClick = { showClearCacheDialog = true },
                                 modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.outlinedButtonColors(
-                                    contentColor = MaterialTheme.colorScheme.error
-                                )
+                                    contentColor = MaterialTheme.colorScheme.error,
+                                ),
                             ) {
-                                Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.DeleteForever, null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
-                                Text("清除缓存")
+                                Text("清除")
                             }
                         }
                     }
                 }
             }
         }
-        
         item {
-            SettingCard(
-                title = "使用说明",
-                icon = Icons.Default.Info
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = "• Playwright 是一个浏览器自动化工具，用于访问需要 JavaScript 渲染的网站",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Text(
-                        text = "• 首次使用时需要下载 Chromium 浏览器（约 150MB）",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Text(
-                        text = "• 如果浏览器损坏或需要更新，可以使用“重新下载”功能",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Text(
-                        text = "• 清除缓存会删除所有下载的浏览器文件，下次使用时需要重新下载",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
+            SettingCard(title = "说明", icon = Icons.Default.Info) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("• JCEF 是进程内嵌 Chromium，用于网页解析嗅探，对应 TV 的 WebView", style = MaterialTheme.typography.bodySmall)
+                    Text("• 首次使用会下载原生组件（约 100MB+）", style = MaterialTheme.typography.bodySmall)
+                    Text("• 已移除 Playwright；请使用本页管理浏览器", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
     }
-    
-    // 下载确认对话框
+
     if (showDownloadDialog && !isDownloading) {
-        PlaywrightDownloadDialog(
-            spiderName = "Playwright 浏览器",
+        BrowserDownloadDialog(
+            reason = "网页解析 / 部分爬虫",
             onConfirm = { startDownload() },
-            onCancel = { showDownloadDialog = false }
+            onCancel = { showDownloadDialog = false },
         )
     }
-    
-    // 下载进度对话框
     if (isDownloading) {
-        PlaywrightDownloadDialog(
-            spiderName = "Playwright 浏览器",
+        BrowserDownloadDialog(
+            reason = "网页解析 / 部分爬虫",
             onConfirm = {},
-            onCancel = { /* 暂不支持中断下载 */ },
+            onCancel = {},
             isDownloading = true,
-            downloadProgress = downloadProgress
+            downloadProgress = downloadProgress,
         )
     }
-    
-    // 清除缓存确认对话框
     if (showClearCacheDialog) {
         AlertDialog(
             onDismissRequest = { showClearCacheDialog = false },
-            title = { Text("确认清除缓存") },
-            text = {
-                Text("此操作将删除所有 Playwright 浏览器文件。\n\n" +
-                     "删除后，使用相关爬虫时需要重新下载浏览器。\n\n" +
-                     "确定要继续吗？")
-            },
+            title = { Text("确认清除") },
+            text = { Text("将删除已下载的 JCEF 原生文件，下次使用需重新下载。") },
             confirmButton = {
                 Button(
                     onClick = { clearCache() },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error
-                    )
-                ) {
-                    Text("确认清除")
-                }
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) { Text("确认清除") }
             },
             dismissButton = {
-                OutlinedButton(onClick = { showClearCacheDialog = false }) {
-                    Text("取消")
-                }
-            }
+                OutlinedButton(onClick = { showClearCacheDialog = false }) { Text("取消") }
+            },
         )
     }
 }

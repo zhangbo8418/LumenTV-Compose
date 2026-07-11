@@ -150,15 +150,17 @@ class VideoViewModel : BaseViewModel() {
                     }
                 }
             } catch (e: IllegalStateException) {
-                if (e.message?.contains("Playwright", ignoreCase = true) == true) {
+                if (e.message?.contains("JCEF", ignoreCase = true) == true ||
+                    e.message?.contains("内嵌浏览器", ignoreCase = true) == true ||
+                    e.message?.contains("Playwright", ignoreCase = true) == true
+                ) {
                     hideProgress()
                     isLoading.value = false
                     _state.value.homeLoaded = false
-                    // 更新状态以显示下载对话框
                     _state.update {
                         it.copy(
-                            showPlaywrightDownloadDialog = true,
-                            playwrightSpiderName = home.value.name ?: "当前站源"
+                            showBrowserDownloadDialog = true,
+                            browserDownloadReason = home.value.name ?: "当前站源",
                         )
                     }
                     return@launch

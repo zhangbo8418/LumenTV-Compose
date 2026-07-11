@@ -107,7 +107,10 @@ object SiteViewModel {
                 }
             }
         } catch (e: IllegalStateException) {
-            if (e.message?.contains("Playwright", ignoreCase = true) == true) {
+            if (e.message?.contains("JCEF", ignoreCase = true) == true ||
+                e.message?.contains("内嵌浏览器", ignoreCase = true) == true ||
+                e.message?.contains("Playwright", ignoreCase = true) == true
+            ) {
                 throw e
             }
             log.error("home Content site:{}", site.name, e)
@@ -270,8 +273,14 @@ object SiteViewModel {
         return Result().apply {
             this.url = url
             this.playUrl = site.playUrl
-            // 其他类型特有：设置解析标识（0=无需解析，1=需要解析）
-            this.parse = if (StringUtils.isBlank(site.playUrl)) 0 else 1
+            // 其他类型特有：对齐 TV Sniffer — 非直链媒体格式则强制解析
+            this.parse = if (com.corner.util.VideoSniffer.isVideoFormat(id) &&
+                StringUtils.isBlank(site.playUrl)
+            ) {
+                0
+            } else {
+                1
+            }
             if (StringUtils.isNotBlank(flag)) {
                 this.flag = flag
             }

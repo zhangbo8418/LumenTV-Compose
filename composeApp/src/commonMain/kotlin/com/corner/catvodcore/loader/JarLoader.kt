@@ -218,8 +218,11 @@ object JarLoader {
             log.debug("Spider类不存在: {}, api: {}", e.message, api)
             return Spider()
         } catch (e: IllegalStateException) {
-            if (e.message?.contains("Playwright", ignoreCase = true) == true) {
-                log.warn("Playwright 浏览器未安装: key={}, api={}", key, api)
+            if (e.message?.contains("JCEF", ignoreCase = true) == true ||
+                e.message?.contains("内嵌浏览器", ignoreCase = true) == true ||
+                e.message?.contains("Playwright", ignoreCase = true) == true
+            ) {
+                log.warn("内嵌浏览器未就绪: key={}, api={}", key, api)
                 throw e
             }
             log.error("加载Spider失败(IllegalStateException): key={}, api={}", key, api, e)

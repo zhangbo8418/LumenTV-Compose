@@ -98,12 +98,8 @@ object Paths {
         return root().resolve("log")
     }
 
-    fun playwrightBrowsers(): File {
-        return userDataRoot().resolve("playwright-browsers").resolve("chromium-1097").check()
-    }
-
-    fun playwrightTemp(): File {
-        return userDataRoot().resolve("temp").check()
+    fun jcefBundle(): File {
+        return userDataRoot().resolve("jcef-bundle").check()
     }
 
     fun epg(name: String): File {

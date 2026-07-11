@@ -44,7 +44,7 @@
 - JS 引擎基于 QuickJS（`wang.harlon.quickjs`）
 - Python 爬虫随发行包内置（`requests` / `lxml` / `pycryptodome` / `certifi`）；开发时可 `./gradlew prepareBundledPython`
 - 视频下载合并用 ffmpeg 随发行包内置；开发时可 `./gradlew prepareBundledFfmpeg`
-- Playwright 爬虫继续支持（用于 WAF 绕过等场景）
+- 网页解析 / WAF 场景使用内嵌 Chromium（JCEF），首次使用需下载原生包
 
 ### 混淆M3U8链接播放
 本项目支持播放经过简单混淆的M3U8文件，如果遇到通过图床传输数据的M3U8文件时会切换到系统默认浏览器播放。
@@ -75,8 +75,8 @@
 - 支持 DLNA投屏功能，同时支持内部/外部播放器播放
 - 支持控制手机控制进度条/音量设置。(仅内部播放器支持)
 
-### Playewright爬虫支持
-- 支持使用 Playwright 爬虫，使用 Playwright 爬虫时，请确保已安装 Playwright。
+### 内嵌浏览器（JCEF）
+- Web 解析与需浏览器环境的爬虫使用 JCEF（内嵌 Chromium），首次使用会提示下载原生包；可在设置页管理。
 
 ### 平台支持
 本项目支持 `Windows（含 Win7 尽力兼容） / Linux / macOS arm64 / macOS amd64`。GitHub Actions 会分别打包 macOS Apple Silicon 与 Intel 产物。Windows 随包 Python 使用 [Alex313031/Python-Win7](https://github.com/Alex313031/Python-Win7) embed（含 `api-ms-win-core-path`）。

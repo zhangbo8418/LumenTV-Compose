@@ -91,6 +91,9 @@ class DetailViewModel : BaseViewModel() {
     private var launched = false
     @Volatile
     internal var suppressAutoLineSwitch = false
+    /** playbackError 防抖：避免 error/finished 连发导致 stop/load 风暴卡死 */
+    @Volatile
+    private var lastPlaybackErrorAtMs = 0L
     private var currentSiteKey = MutableStateFlow("")
     private val jobList = mutableListOf<Job>()
     private var flagSwitchJob: Job? = null
@@ -102,6 +105,9 @@ class DetailViewModel : BaseViewModel() {
     private val playerContentTaskId = AtomicInteger(0)
     /** 本集自动换线时已失败的线路，避免末线无法回退、以及死循环 */
     private val failedFlagsForEpisode = mutableSetOf<String>()
+    /** 单集自动换线次数上限，防止 stop/load 风暴卡死 UI */
+    private var autoFallbackCount = 0
+    private val maxAutoFallbackPerEpisode = 6
     @Volatile
     private var pendingPlayRequest: VodPlayRequest? = null
     @Volatile
@@ -281,12 +287,30 @@ class DetailViewModel : BaseViewModel() {
             log.debug("正在拉取播放地址，跳过 playbackError")
             return
         }
+        val now = System.currentTimeMillis()
+        if (now - lastPlaybackErrorAtMs < 1_000L) {
+            log.debug("playbackError 防抖，跳过: {}", msg)
+            return
+        }
+        lastPlaybackErrorAtMs = now
         log.warn("playbackError: {}", msg ?: "播放失败")
         scope.launch {
             stopPlaybackForRefresh()
             _state.update { it.copy(isBuffering = false, isLoading = false) }
-            fallbackToNextLineOrSource()
+            tryAutoFallback(msg ?: "播放失败")
         }
+    }
+
+    /** @return false 表示已达上限，不再自动换线 */
+    private fun tryAutoFallback(reason: String): Boolean {
+        if (autoFallbackCount >= maxAutoFallbackPerEpisode) {
+            log.warn("自动换线已达上限({}): {}", maxAutoFallbackPerEpisode, reason)
+            SnackBar.postMsg("多次播放失败，请手动切换线路或片源", type = SnackBar.MessageType.ERROR)
+            return false
+        }
+        autoFallbackCount++
+        fallbackToNextLineOrSource()
+        return true
     }
 
     private fun isSiteChangeable(): Boolean =
@@ -1448,10 +1472,19 @@ class DetailViewModel : BaseViewModel() {
                 handleEmptyPlayResult(tryNextLine = true)
                 return
             }
-            if (!isDirectlyPlayable(result.url.v()) && !result.needParse() && !result.isUseParse()) {
-                log.warn("播放地址不可直接播放，尝试换线: {}", result.url.v().take(80))
-                handleEmptyPlayResult(tryNextLine = true)
-                return
+            // 对齐 TV：非直链先强制走解析，禁止「不可直接播放就立刻换线」跳过 ParseHelper
+            val rawPlayUrl = result.url.v()
+            if (!isDirectlyPlayable(rawPlayUrl) && !result.needParse() && !result.isUseParse()) {
+                if (com.corner.catvodcore.config.ParseConfig.hasParse() &&
+                    !com.corner.util.VideoSniffer.isVideoFormat(rawPlayUrl)
+                ) {
+                    log.info("非直链地址，强制走解析: {}", rawPlayUrl.take(80))
+                    result.parse = 1
+                } else if (!com.corner.util.VideoSniffer.isVideoFormat(rawPlayUrl)) {
+                    log.warn("播放地址不可直接播放且无解析器: {}", rawPlayUrl.take(80))
+                    handleEmptyPlayResult(tryNextLine = true)
+                    return
+                }
             }
 
             log.info("applyPlayerResult: ep={}", ep.name)
@@ -1555,7 +1588,7 @@ class DetailViewModel : BaseViewModel() {
         SnackBar.postMsg("获取播放地址失败", type = SnackBar.MessageType.ERROR)
         // 拉地址失败必须允许继续换线；suppress 只挡 VLC stop/finished 误触发
         if (tryNextLine) {
-            fallbackToNextLineOrSource()
+            tryAutoFallback("播放结果为空")
         }
     }
 
@@ -1701,6 +1734,7 @@ class DetailViewModel : BaseViewModel() {
                 // 换集清空失败线路记录，允许重新尝试
                 if (pendingPlayRequest?.episodeUrl != effectiveEp.url) {
                     failedFlagsForEpisode.clear()
+                    autoFallbackCount = 0
                 }
 
                 inFlightJob?.takeIf { it != coroutineContext[Job] }?.cancel()

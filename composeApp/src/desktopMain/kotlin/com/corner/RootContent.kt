@@ -42,18 +42,23 @@ import com.corner.ui.LiveScene
 import com.corner.ui.SettingScene
 import com.corner.ui.nav.vm.*
 import com.corner.ui.navigation.TVScreen
+import com.corner.ui.scene.BrowserDownloadDialog
 import com.corner.ui.scene.LoadingIndicator
 import com.corner.ui.search.SearchScene
 import com.corner.ui.video.VideoScene
 import com.corner.util.FirefoxGray
+import com.corner.util.jcef.JcefBrowserManager
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.corner.util.settings.SettingType
 import org.slf4j.LoggerFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private val log = LoggerFactory.getLogger("RootContent")
 
@@ -116,6 +121,46 @@ fun WindowScope.RootContent(
                 GlobalAppState.chooseVod.value = vod
                 GlobalAppState.detailFrom = DetailFromPage.HOME
                 navController.navigate(TVScreen.DetailScreen.name)
+            },
+        )
+    }
+
+    // Web 解析需要内嵌浏览器时全局弹出下载确认
+    var showBrowserDialog by remember { mutableStateOf(false) }
+    var browserReason by remember { mutableStateOf("网页解析") }
+    var browserDownloading by remember { mutableStateOf(false) }
+    var browserProgress by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(Unit) {
+        JcefBrowserManager.installRequested.collect { reason ->
+            browserReason = reason.ifBlank { "网页解析" }
+            showBrowserDialog = true
+        }
+    }
+    if (showBrowserDialog) {
+        BrowserDownloadDialog(
+            reason = browserReason,
+            isDownloading = browserDownloading,
+            downloadProgress = browserProgress,
+            onConfirm = {
+                scope.launch {
+                    browserDownloading = true
+                    browserProgress = 0f
+                    val result = withContext(Dispatchers.IO) {
+                        JcefBrowserManager.ensureReady { p ->
+                            browserProgress = p.toFloat()
+                        }
+                    }
+                    browserDownloading = false
+                    showBrowserDialog = false
+                    if (result.isSuccess) {
+                        JcefBrowserManager.resetInstallPrompt()
+                    }
+                }
+            },
+            onCancel = {
+                if (!browserDownloading) {
+                    showBrowserDialog = false
+                }
             },
         )
     }

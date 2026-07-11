@@ -18,6 +18,6 @@ data class VideoScreenState(
     val prompt:String = "",
     val dirPaths:MutableList<String> = mutableListOf(), // 当前目录路径
     var ref:Int = 0,
-    var showPlaywrightDownloadDialog: Boolean = false,
-    var playwrightSpiderName: String = ""
+    var showBrowserDownloadDialog: Boolean = false,
+    var browserDownloadReason: String = "",
 )

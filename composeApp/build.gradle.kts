@@ -105,8 +105,8 @@ kotlin {
                 implementation(libs.jupnp.support)
                 implementation(libs.jupnp.osgi)
 
-                // Playwright for WAF bypass (used by some spiders like ChangZhang)
-                implementation(libs.playwright)
+                // JCEF embedded Chromium（对齐 TV WebView 嗅探）
+                implementation(libs.jcefmaven)
 
                 // QuickJS for JS spider support
                 implementation(project(":quickjs-bridge"))
@@ -189,9 +189,13 @@ compose.desktop {
 
         jvmArgs("-Dfile.encoding=UTF-8")
         jvmArgs("-Dsun.net.http.allowRestrictedHeaders=true")
-        // Note: --enable-native-access is only needed for NightMonkeys (AVIF/HEIF support)
-        // Uncomment if you enable AVIF/HEIF support
-        // jvmArgs("--enable-native-access=ALL-UNNAMED")
+        // JCEF / JOGL on JDK 16+
+        jvmArgs("--add-opens=java.desktop/sun.awt=ALL-UNNAMED")
+        jvmArgs("--add-opens=java.desktop/sun.lwawt=ALL-UNNAMED")
+        jvmArgs("--add-opens=java.desktop/sun.lwawt.macosx=ALL-UNNAMED")
+        jvmArgs("--add-exports=java.base/java.lang=ALL-UNNAMED")
+        jvmArgs("--add-exports=java.desktop/sun.awt=ALL-UNNAMED")
+        jvmArgs("--add-exports=java.desktop/sun.java2d=ALL-UNNAMED")
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
@@ -209,7 +213,7 @@ compose.desktop {
                 "java.xml",      // jUPnP / DLNA DocumentBuilder
                 "java.logging",
                 "java.desktop",
-                "jdk.zipfs"  // JAR 文件系统支持（Playwright 需要）
+                "jdk.zipfs"
             )
             val dir = project.layout.projectDirectory.dir("src/desktopMain/appResources")
             println(dir)

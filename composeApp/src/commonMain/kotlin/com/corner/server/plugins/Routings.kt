@@ -13,7 +13,7 @@ import com.corner.ui.scene.SnackBar
 import com.corner.util.m3u8.M3U8Cache
 import com.corner.util.toSingleValueMap
 import com.corner.util.play.BrowserUtils
-import com.corner.util.playwright.PlaywrightBrowserManager
+import com.corner.util.jcef.JcefBrowserManager
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.http.content.*
@@ -207,14 +207,14 @@ fun Application.configureRouting() {
         /**
          * 获取浏览器状态
          */
-        get("/api/playwright/status") {
-            val status = mapOf<String, String>(
-                "available" to PlaywrightBrowserManager.isBrowserAvailable().toString(),
-                "path" to (PlaywrightBrowserManager.getBrowserExecutablePath() ?: ""),
-                "cacheDir" to (PlaywrightBrowserManager.getBrowserCacheDir() ?: ""),
-                "tempDir" to (PlaywrightBrowserManager.getTempDir() ?: "")
+        get("/api/jcef/status") {
+            call.respond(
+                mapOf(
+                    "available" to JcefBrowserManager.isAvailable().toString(),
+                    "installed" to JcefBrowserManager.isNativeInstalled().toString(),
+                    "path" to JcefBrowserManager.getInstallDir().absolutePath,
+                )
             )
-            call.respond(status)
         }
 
         /**

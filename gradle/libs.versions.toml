@@ -43,8 +43,8 @@ koin = "3.5.3"
 # Coroutines
 kotlinx-coroutines = "1.7.3"
 
-# Playwright for WAF bypass
-playwright = "1.58.0"
+# JCEF embedded Chromium (TV WebView 对齐)
+jcefmaven = "146.0.10"
 quickjs = "3.2.3"
 
 
@@ -133,8 +133,8 @@ jupnp-bom-compile = { module = "org.jupnp.bom:org.jupnp.bom.compile", version.re
 jupnp-osgi = { module = "org.jupnp:org.jupnp.osgi", version.ref = "jupnp" }
 jupnp-support = { module = "org.jupnp:org.jupnp.support", version.ref = "jupnp" }
 
-# Playwright
-playwright = { module = "com.microsoft.playwright:playwright", version.ref = "playwright" }
+# JCEF
+jcefmaven = { module = "me.friwi:jcefmaven", version.ref = "jcefmaven" }
 
 # QuickJS
 quickjs-java = { module = "wang.harlon.quickjs:wrapper-java", version.ref = "quickjs" }
