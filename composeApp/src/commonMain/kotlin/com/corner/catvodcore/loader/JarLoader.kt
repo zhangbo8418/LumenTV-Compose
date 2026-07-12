@@ -23,8 +23,6 @@ import java.util.concurrent.ConcurrentHashMap
 object JarLoader {
     private val log = thisLogger()
 
-    private fun inHostProcess(): Boolean = JarSpiderHost.isHostProcess()
-
     /**
      * jar包加载器（对齐 TV：父优先 URLClassLoader，宿主 catvod API 覆盖 jar 内同名类）
      * */
@@ -36,7 +34,7 @@ object JarLoader {
     private val methods: ConcurrentHashMap<String, Method> by lazy { ConcurrentHashMap() }
 
     /**
-     * 爬虫缓存（仅 host 进程内使用；主进程走 [JarSpiderProxy]）
+     * 爬虫缓存
      */
     private val spiders: ConcurrentHashMap<String, Spider> by lazy { ConcurrentHashMap() }
 
@@ -50,24 +48,11 @@ object JarLoader {
      */
     private const val MAX_RETRY_COUNT = 30
 
-    /** sidecar 起不来时回退进程内加载（主进程本就为 JS 保留了 ClassLoader） */
-    @Volatile
-    private var sidecarUnavailable = false
-
     /**
      * 清空加载的jar包
      */
     fun clear() {
-        log.info("clear jar loader host={}", inHostProcess())
-        if (!inHostProcess()) {
-            JarSpiderHostClient.clear()
-            sidecarUnavailable = false
-            // 主进程仍可能为 JS 留了 ClassLoader
-            loaders.clear()
-            methods.clear()
-            recent = null
-            return
-        }
+        log.info("clear jar loader")
         spiders.values.forEach { spider ->
             CoroutineScope(Dispatchers.IO).launch {
                 spider.destroy()
@@ -85,28 +70,7 @@ object JarLoader {
      * @param spider  jar路径
      * */
     fun loadJar(key: String, spider: String) {
-        // 主进程：本地加载供 JS ClassLoader；同时通知 sidecar
-        if (!inHostProcess()) {
-            runCatching { loadJarLocal(key, spider) }
-                .onFailure { log.warn("主进程本地 loadJar 失败(JS ClassLoader): {}", it.message) }
-            if (!sidecarUnavailable) {
-                runCatching { JarSpiderHostClient.loadJar(key, spider) }
-                    .onFailure {
-                        markSidecarUnavailable("loadJar", it)
-                    }
-            }
-            return
-        }
         loadJarLocal(key, spider)
-    }
-
-    private fun markSidecarUnavailable(op: String, e: Throwable) {
-        if (!sidecarUnavailable) {
-            log.warn("Jar sidecar {} 失败，后续改用进程内加载: {}", op, e.message)
-            sidecarUnavailable = true
-        } else {
-            log.debug("Jar sidecar {} 失败: {}", op, e.message)
-        }
     }
 
     private fun loadJarLocal(key: String, spider: String) {
@@ -217,14 +181,14 @@ object JarLoader {
     }
 
     /**
-     * 调用初始化方法
+     * 调用Init
      * @param key
      */
     private fun invokeInit(key: String) {
         try {
-            val clazz = loaders[key]?.loadClass(Constant.catVodInit)
-            val method = clazz?.getMethod("init")
-            method?.invoke(clazz)
+            val clz = loaders[key]?.loadClass(Constant.catVodInit)
+            val method = clz?.getMethod("init")
+            method?.invoke(null)
         } catch (e: ClassNotFoundException) {
             log.debug("Init类不存在: {}", Constant.catVodInit)
         } catch (e: Exception) {
@@ -241,17 +205,6 @@ object JarLoader {
      * @return
      */
     fun getSpider(key: String, api: String, ext: String, jar: String): Spider {
-        if (!inHostProcess() && !sidecarUnavailable) {
-            try {
-                return JarSpiderHostClient.getSpider(key, api, ext, jar)
-            } catch (e: Exception) {
-                markSidecarUnavailable("getSpider", e)
-            }
-        }
-        return getSpiderLocal(key, api, ext, jar)
-    }
-
-    private fun getSpiderLocal(key: String, api: String, ext: String, jar: String): Spider {
         try {
             val jaKey = Utils.md5(jar)
             val spKey = jaKey + key
@@ -279,7 +232,6 @@ object JarLoader {
             log.error("加载Spider失败(IllegalStateException): key={}, api={}", key, api, e)
             return Spider()
         } catch (e: java.net.ConnectException) {
-            // 网络连接错误，通常是代理问题
             log.error("加载Spider时网络连接失败: key={}, api={}", key, api, e)
             SnackBar.postMsg(
                 "爬虫加载失败：无法连接到网络\n\n可能原因：\n1. 代理服务器未启动（当前配置: ${
@@ -289,7 +241,6 @@ object JarLoader {
             )
             return Spider()
         } catch (e: IllegalArgumentException) {
-            // URL 格式错误
             log.error("加载Spider时URL格式错误: key={}, api={}, 错误: {}", key, api, e.message, e)
             SnackBar.postMsg(
                 "爬虫加载失败：URL格式错误\n\n错误信息: ${e.message}\n\n可能原因：\n1. 代理配置不正确\n2. Spider内部生成的URL无效\n\n建议：关闭代理后重试，或联系开发者修复Spider",
@@ -298,7 +249,6 @@ object JarLoader {
             return Spider()
         } catch (e: Exception) {
             log.error("加载Spider失败: key={}, api={}", key, api, e)
-            // 判断是否是网络相关错误
             val isNetworkError = e.cause is java.net.ConnectException ||
                 e.cause is java.net.SocketTimeoutException ||
                 e.message?.contains("Failed to connect", ignoreCase = true) == true
@@ -334,17 +284,6 @@ object JarLoader {
      * @return
      */
     fun proxyInvoke(params: Map<String, String>): Array<Any>? {
-        if (!inHostProcess() && !sidecarUnavailable) {
-            try {
-                return JarSpiderHostClient.proxyInvoke(params)
-            } catch (e: Exception) {
-                markSidecarUnavailable("proxyInvoke", e)
-            }
-        }
-        return proxyInvokeLocal(params)
-    }
-
-    private fun proxyInvokeLocal(params: Map<String, String>): Array<Any>? {
         return try {
             val md5 = Utils.md5(recent ?: "")
             val proxy = methods[md5]
@@ -370,13 +309,6 @@ object JarLoader {
     }
 
     fun jsonExt(key: String, jxs: LinkedHashMap<String, String>, url: String): String? {
-        if (!inHostProcess() && !sidecarUnavailable) {
-            try {
-                return JarSpiderHostClient.jsonExt(key, jxs, url)
-            } catch (e: Exception) {
-                markSidecarUnavailable("jsonExt", e)
-            }
-        }
         return try {
             val loader = requireRecentLoader()
             val clz = loader.loadClass("com.github.catvod.parser.Json$key")
@@ -395,13 +327,6 @@ object JarLoader {
         jxs: LinkedHashMap<String, HashMap<String, String>>,
         url: String,
     ): String? {
-        if (!inHostProcess() && !sidecarUnavailable) {
-            try {
-                return JarSpiderHostClient.jsonExtMix(flag, key, name, jxs, url)
-            } catch (e: Exception) {
-                markSidecarUnavailable("jsonExtMix", e)
-            }
-        }
         return try {
             val loader = requireRecentLoader()
             val clz = loader.loadClass("com.github.catvod.parser.Mix$key")
@@ -429,17 +354,11 @@ object JarLoader {
      */
     fun setRecentJar(jar: String?) {
         recent = jar
-        if (!inHostProcess() && !sidecarUnavailable) {
-            runCatching { JarSpiderHostClient.setRecentJar(jar) }
-                .onFailure { markSidecarUnavailable("setRecentJar", it) }
-        }
     }
 
     fun getClassLoader(jar: String): ClassLoader? {
-        // 始终本地加载，供 JS spider 使用
         val jaKey = Utils.md5(jar)
         if (loaders[jaKey] == null) loadJarLocal(jaKey, jar)
         return loaders[jaKey]
     }
 }
-
