@@ -33,6 +33,8 @@ import com.corner.ui.player.PlayState
 import com.corner.ui.player.frame.FramePlayerController
 import com.corner.ui.scene.emptyShow
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.isActive
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
@@ -45,19 +47,22 @@ fun FrameContainer(
     // 在帧时钟内拉取 AtomicReference，避免跨线程写 MutableState 触发 snapshot 卡死
     var bitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(controller) {
-        while (true) {
-            withFrameNanos {
-                val next = controller.peekVideoFrame()
-                if (next !== bitmap) {
-                    bitmap = next
+        try {
+            while (isActive) {
+                withFrameNanos {
+                    val next = controller.peekVideoFrame()
+                    if (next !== bitmap) {
+                        bitmap = next
+                    }
                 }
             }
+        } catch (_: CancellationException) {
+            // 离开详情：NavHost 退场动画取消本 Effect，属正常路径
         }
     }
     val interactionSource = remember { MutableInteractionSource() }
-    val isControllerReady by derivedStateOf { // 播放器就绪
-        controller.hasPlayer() && !controller.isReleased()
-    }
+    // 勿用 derivedStateOf 读 hasPlayer：dispose 与 clear 并发时易踩 snapshot
+    val isControllerReady = controller.hasPlayer() && !controller.isReleased()
     Box(
         modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant)
             .combinedClickable(

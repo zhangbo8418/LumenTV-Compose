@@ -157,7 +157,7 @@ fun WindowScope.DetailScene(vm: DetailViewModel, onClickBack: () -> Unit) {
         }
         onDispose {
             if (!GlobalAppState.closeApp.value) {
-                // 离开详情：stop + unbind，保留全局 VLC 单例
+                // 离开详情：clear 必须非阻塞（禁止在 Composition dispose 里 sync libvlc）
                 vm.clear(unbindHost = true)
                 if (localShowPngDialog) {
                     BrowserUtils.cleanup()

@@ -73,12 +73,22 @@ class VlcJInit {
         }
 
         /**
-         * 同步 pause 立刻停声（不调 libvlc stop，不改 mute）。
-         * 供 clear/onCleared 在可取消协程外调用，避免返回后后台仍出声。
+         * 离开页第一步：只关渲染开关 + 清帧引用，不调 libvlc、不碰 Compose Snapshot。
+         * 可在 Composition onDispose 里安全调用。
+         */
+        fun beginLeavePlayback() {
+            val ctrl = controller ?: return
+            runCatching { ctrl.beginLeavePlayback() }
+        }
+
+        /**
+         * @deprecated 易在 Composition dispose 时同步进 libvlc 触发 snapshot 崩溃；改用 [beginLeavePlayback] + [stopPlayback]。
          */
         fun stopPlaybackSync() {
+            beginLeavePlayback()
             val ctrl = controller ?: return
-            runCatching { ctrl.endPlaybackSync() }
+            // 仍同步 pause，但不再 detach surface（detach 放到异步 endPlayback）
+            runCatching { ctrl.vlcController().endPlayback() }
         }
 
         /** 离开详情：对齐 TV suspend，非阻塞停播，保留原生实例 */

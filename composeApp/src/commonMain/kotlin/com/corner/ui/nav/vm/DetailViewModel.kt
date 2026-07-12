@@ -496,11 +496,14 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
         clearPlaybackControl()
         log.debug("DetailViewModel onCleared - 开始清理")
         supervisor.cancel()
-        // 同步消音停播：不可放到 cleanupScope（下面会 cancel，日志里因此出现 JobCancellationException）
-        runCatching { VlcJInit.stopPlaybackSync() }
+        // Composition 可能已销毁：只关渲染；pause 丢到独立 IO，避免 sync 进 libvlc
+        runCatching { VlcJInit.beginLeavePlayback() }
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching { VlcJInit.stopPlayback() }
+        }
         runCatching { VlcJInit.unbindHost(this@DetailViewModel) }
         cleanupJob.cancel()
-        log.debug("DetailViewModel onCleared - 已 stop/unbind")
+        log.debug("DetailViewModel onCleared - 已 beginLeave/unbind")
     }
 
     // ==================== 页面加载流程 ====================
@@ -1170,13 +1173,22 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
         onComplete: () -> Unit = {},
     ) {
         log.debug("----------开始清理详情页资源----------")
-        // 离开详情才立刻消音；页内快搜 unbindHost=false 需保持播放
+        // 先取消拉地址/播放任务，避免返回主页后 Py RPC 回调还改状态
+        runCatching { cancelPlayerContentRequest() }
+        playbackJob?.cancel()
+        loadDetailJob?.cancel()
+        quickSearchJob?.cancel()
+
+        // Composition onDispose 里禁止同步调 libvlc：只关渲染，pause 全部异步
         if (unbindHost) {
-            runCatching { VlcJInit.stopPlaybackSync() }
+            runCatching { VlcJInit.beginLeavePlayback() }
         }
 
         cleanupScope.launch(Dispatchers.IO) {
             try {
+                if (unbindHost) {
+                    runCatching { VlcJInit.stopPlayback() }
+                }
                 withTimeoutOrNull(1_500L) {
                     performCleanup(unbindHost)
                 } ?: log.warn("详情页资源清理超时，强制继续")
@@ -1186,7 +1198,7 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
                     onComplete()
                 }
             } catch (_: CancellationException) {
-                log.debug("详情页清理被取消（停播已同步发起）")
+                log.debug("详情页清理被取消（停播已异步发起）")
             } catch (e: Exception) {
                 log.error("----------清理过程中出错----------", e)
             } finally {

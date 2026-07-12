@@ -106,7 +106,15 @@ class VlcjFrameController(
         controller.stopPlaybackForRefresh()
     }
 
-    /** 离开详情：对齐 TV Service.suspend，主线程清帧 + mute/pause + 异步 stop */
+    /**
+     * Composition dispose 安全：只停渲染/清帧，不调 libvlc、不 detach surface。
+     */
+    fun beginLeavePlayback() {
+        frameRenderer.pauseRendering()
+        frameRenderer.clearFrameSoft()
+    }
+
+    /** 离开详情：对齐 TV Service.suspend，主线程清帧 + 异步 pause */
     suspend fun endPlayback() {
         withContext(Dispatchers.Swing) {
             frameRenderer.pauseRendering()
@@ -117,9 +125,8 @@ class VlcjFrameController(
     }
 
     fun endPlaybackSync() {
-        frameRenderer.pauseRendering()
-        frameRenderer.clearFrameSoft()
-        detachVideoSurface()
+        beginLeavePlayback()
+        // 同步路径也不再 detach（易与 Compose 退场动画竞态）；detach 交给异步 endPlayback
         controller.endPlayback()
     }
 
