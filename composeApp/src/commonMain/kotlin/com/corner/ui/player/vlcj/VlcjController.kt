@@ -35,7 +35,6 @@ import uk.co.caprica.vlcj.player.base.State
 import uk.co.caprica.vlcj.player.embedded.EmbeddedMediaPlayer
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
 import kotlin.time.Duration
@@ -142,7 +141,9 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
     }
 
     /**
-     * 从独立线程尝试 stop；超时则丢弃旧 MediaPlayer 并重建，避免 libvlc 死锁卡死整窗。
+     * 换集/换线中断：绝不调用 controls().stop()。
+     * stop 一旦卡在 libvlc，同 factory 再建播放器也会一起卡死（已验证）。
+     * 做法：解绑后直接换新 factory + MediaPlayer，旧实例仅后台放弃。
      */
     private val abortEpoch = AtomicInteger(0)
     @Volatile
@@ -159,34 +160,21 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
         val epoch = abortEpoch.get()
         val latch = java.util.concurrent.CountDownLatch(1)
         abortLatch = latch
+
+        val oldPlayer: EmbeddedMediaPlayer?
+        synchronized(vlcStateLock) {
+            oldPlayer = player
+            // 先摘掉引用，避免其它路径继续碰旧实例
+            if (oldPlayer != null) {
+                player = null
+            }
+        }
+
         Thread({
             try {
-                log.info("中断 VLC 加载: {}", reason)
-                val old = player ?: return@Thread
-                val stopExec = Executors.newSingleThreadExecutor { r ->
-                    Thread(r, "vlc-stop-try").apply { isDaemon = true }
-                }
-                try {
-                    val fut = stopExec.submit<Unit> {
-                        runCatching { old.controls()?.stop() }
-                    }
-                    try {
-                        fut.get(1_200L, TimeUnit.MILLISECONDS)
-                        log.info("VLC stop 完成: {}", reason)
-                    } catch (_: TimeoutException) {
-                        fut.cancel(true)
-                        log.warn("VLC stop 超时，强制重建播放器: {}", reason)
-                        if (abortEpoch.get() == epoch) {
-                            forceReplacePlayer(old, reason)
-                        }
-                    } catch (e: Exception) {
-                        log.warn("VLC stop 异常: {}", e.message)
-                        if (abortEpoch.get() == epoch) {
-                            forceReplacePlayer(old, reason)
-                        }
-                    }
-                } finally {
-                    stopExec.shutdownNow()
+                log.info("中断 VLC 加载(跳过 stop，重建 factory): {}", reason)
+                if (oldPlayer != null && abortEpoch.get() == epoch) {
+                    replaceWithFreshFactory(oldPlayer, reason)
                 }
             } catch (e: Exception) {
                 log.warn("中断 VLC 加载失败: {}", e.message)
@@ -197,8 +185,8 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
         }, "vlc-abort").apply { isDaemon = true }.start()
     }
 
-    /** 供换集协程等待 abort 结束（带超时，绝不永久阻塞） */
-    suspend fun awaitLastAbort(timeoutMs: Long = 2_000L) {
+    /** 供换集协程短暂等待；超时也继续，绝不永久阻塞 */
+    suspend fun awaitLastAbort(timeoutMs: Long = 400L) {
         val latch = abortLatch ?: return
         withContext(Dispatchers.IO) {
             latch.await(timeoutMs, TimeUnit.MILLISECONDS)
@@ -206,36 +194,47 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
     }
 
     /**
-     * stop 卡死时：立刻换新 MediaPlayer，旧实例后台尽力释放（永不 join）。
+     * 新建独立 factory + MediaPlayer；创建过程不持有 vlcStateLock，避免卡死牵连 UI。
+     * 旧 player/factory 不调用 stop/release（二者均可永久阻塞）。
      */
-    private fun forceReplacePlayer(stuck: MediaPlayer, reason: String) {
-        val neu = synchronized(vlcStateLock) {
-            if (player !== stuck && player != null) {
-                log.info("播放器已替换，跳过重建: {}", reason)
-                return
+    private fun replaceWithFreshFactory(stuck: EmbeddedMediaPlayer, reason: String) {
+        val newFactory = runCatching {
+            MediaPlayerFactory(vlcjArgs)
+        }.onFailure {
+            log.error("新建 MediaPlayerFactory 失败: {}", reason, it)
+        }.getOrNull() ?: return
+
+        val neu = runCatching {
+            newFactory.mediaPlayers()?.newEmbeddedMediaPlayer()?.apply {
+                events().addMediaPlayerEventListener(stateListener)
+                video().setScale(0.0f)
+                val muted = audio()?.isMute ?: false
+                _state.update { it.copy(isMuted = muted) }
             }
-            val created = runCatching {
-                factory?.mediaPlayers()?.newEmbeddedMediaPlayer()?.apply {
-                    events().addMediaPlayerEventListener(stateListener)
-                    video().setScale(0.0f)
-                    val muted = audio()?.isMute ?: false
-                    _state.update { it.copy(isMuted = muted) }
-                }
-            }.onFailure { log.error("重建 MediaPlayer 失败", it) }.getOrNull()
-            if (created == null) {
-                log.error("无法重建 MediaPlayer: {}", reason)
-                return
-            }
-            player = created
-            created
+        }.onFailure {
+            log.error("新建 MediaPlayer 失败: {}", reason, it)
+            runCatching { newFactory.release() }
+        }.getOrNull()
+
+        if (neu == null) return
+
+        val previousFactory: MediaPlayerFactory?
+        synchronized(vlcStateLock) {
+            previousFactory = if (::factory.isInitialized) factory else null
+            factory = newFactory
+            player = neu
         }
+        log.info("已用新 factory 替换播放器: {}", reason)
         runCatching { onPlayerRecreated?.invoke(neu) }
             .onFailure { log.warn("重建后回调失败: {}", it.message) }
-        Thread({
-            runCatching { stuck.controls()?.stop() }
-            runCatching { stuck.release() }
-            log.info("已丢弃卡死的旧 MediaPlayer: {}", reason)
-        }, "vlc-abandon").apply { isDaemon = true }.start()
+
+        // 旧 native 可能已死锁：只标记放弃，绝不 stop/release
+        log.info(
+            "已放弃旧 MediaPlayer/factory（不 stop/release）: {} stuck={} oldFactory={}",
+            reason,
+            System.identityHashCode(stuck),
+            previousFactory?.let { System.identityHashCode(it) },
+        )
     }
 
     /** 保留：异常场景下重建（当前 loadURL 已不依赖此队列起播） */

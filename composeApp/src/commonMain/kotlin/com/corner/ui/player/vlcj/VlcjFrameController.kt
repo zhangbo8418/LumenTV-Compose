@@ -81,14 +81,13 @@ class VlcjFrameController(
         frameRenderer.clearFrameSoft()
     }
 
-    /** 换集：先停渲染并解绑 surface，限时中断 VLC；勿在 stop 未完成前绑回 surface */
+    /** 换集：先停渲染并解绑 surface；后台换新 factory，短等即可 */
     suspend fun stopForRefreshAndAwait() {
         frameRenderer.pauseRendering()
         frameRenderer.clearFrameSoft()
         detachVideoSurface()
         controller.stopForRefresh()
-        controller.awaitLastAbort(2_000L)
-        // 等下次 loadURL → resumeVideoRendering 再绑 surface，避免与卡死的 stop 互锁
+        controller.awaitLastAbort(400L)
     }
 
     fun stopForRefresh() {

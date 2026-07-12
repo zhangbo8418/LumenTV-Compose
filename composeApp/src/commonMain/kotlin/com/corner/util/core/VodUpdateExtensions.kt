@@ -34,11 +34,12 @@ fun Vod.buildUpdatedDetail(selectedFlag: Flag, newEp: Episode?): Vod {
 }
 
 /**
- * 更新 Vod 中所有线路的激活状态
+ * 更新 Vod 中所有线路的激活状态（按 flag 唯一标识，勿用 show——显示名可能重复）
  */
 fun Vod.updateFlagActivationStates(selectedFlag: Flag) {
+    val selected = selectedFlag.flag
     vodFlags.forEach { flag ->
-        flag.activated = (flag.show == selectedFlag.show)
+        flag.activated = !selected.isNullOrBlank() && flag.flag == selected
         if (flag.activated) {
             currentFlag = flag
         }

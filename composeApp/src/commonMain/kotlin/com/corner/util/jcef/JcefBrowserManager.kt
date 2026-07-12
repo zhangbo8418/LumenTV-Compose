@@ -81,10 +81,12 @@ object JcefBrowserManager {
                     SnackBar.postMsg("正在准备内嵌浏览器…", type = SnackBar.MessageType.INFO)
                     val builder = CefAppBuilder()
                     builder.setInstallDir(getInstallDir())
-                    builder.getCefSettings().windowless_rendering_enabled = true
+                    // 关闭 OSR：OSR 依赖 JOGL/gluegen，发行包 natives 目录常缺 dll，会 UnsatisfiedLinkError
+                    builder.getCefSettings().windowless_rendering_enabled = false
                     builder.addJcefArgs("--disable-gpu")
                     builder.addJcefArgs("--disable-software-rasterizer")
                     builder.addJcefArgs("--ignore-certificate-errors")
+                    builder.addJcefArgs("--disable-web-security")
                     builder.setAppHandler(object : MavenCefAppHandlerAdapter() {})
                     builder.setProgressHandler { state, percent ->
                         val p = percent.toDouble()
@@ -99,7 +101,7 @@ object JcefBrowserManager {
                     onProgress?.invoke(1.0)
                     SnackBar.postMsg("内嵌浏览器已就绪", type = SnackBar.MessageType.SUCCESS)
                     Result.success(app)
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     log.error("JCEF 初始化失败", e)
                     availableCached = false
                     SnackBar.postMsg("内嵌浏览器初始化失败: ${e.message}", type = SnackBar.MessageType.ERROR)

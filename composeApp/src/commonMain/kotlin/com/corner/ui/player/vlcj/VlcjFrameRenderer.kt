@@ -53,6 +53,9 @@ class VlcjFrameRenderer(
 
     @Volatile
     private var renderEnabled = true
+
+    /** 仅保护 bitmap 交换；pause/resume 只用 volatile，避免与 VLC display 线程互锁 */
+    private val bitmapSwapLock = Any()
     
     /**
      * 检查渲染器是否已释放
@@ -129,28 +132,32 @@ class VlcjFrameRenderer(
                     displayWidth: Int,
                     displayHeight: Int
                 ) {
+                    // 先无锁快速退出，避免与 pauseRendering 死锁卡死 UI
+                    if (isReleased || !renderEnabled) return
                     try {
-                        synchronized(this@VlcjFrameRenderer) {
-                            if (isReleased || !renderEnabled) return
+                        val width = bufferFormat.width
+                        val height = bufferFormat.height
+                        val byteBuffer = nativeBuffers[0]
+                        val pixels = byteArray
+                        if (byteBuffer.limit() <= 0 || pixels == null) return
 
-                            val width = bufferFormat.width
-                            val height = bufferFormat.height
-                            val byteBuffer = nativeBuffers[0]
-                            val pixels = byteArray
+                        byteBuffer.get(pixels)
+                        byteBuffer.rewind()
 
-                            if (byteBuffer.limit() <= 0 || pixels == null) return
+                        if (isReleased || !renderEnabled) return
 
-                            byteBuffer.get(pixels)
-                            byteBuffer.rewind()
+                        val bmp = bitmapPool.acquire(width, height)
+                        bmp.installPixels(pixels)
 
-                            val bmp = bitmapPool.acquire(width, height)
-                            bmp.installPixels(pixels)
-
+                        synchronized(bitmapSwapLock) {
+                            if (isReleased || !renderEnabled) {
+                                bitmapPool.release(bmp)
+                                return
+                            }
                             currentBitmap?.let { old ->
                                 inFlightBitmaps.addLast(old)
                                 drainInFlight(keep = maxInFlight)
                             }
-
                             currentBitmap = bmp
                             if (!bmp.isClosed) {
                                 imageBitmapState.value = bmp.asComposeImageBitmap()
@@ -158,9 +165,8 @@ class VlcjFrameRenderer(
                         }
                     } catch (e: Exception) {
                         log.error("渲染帧时发生错误", e)
-                        synchronized(this@VlcjFrameRenderer) {
-                            // 出错时不要立刻 close：Compose 可能仍持有引用
-                            imageBitmapState.value = null
+                        imageBitmapState.value = null
+                        synchronized(bitmapSwapLock) {
                             currentBitmap = null
                         }
                     }
@@ -186,39 +192,32 @@ class VlcjFrameRenderer(
     }
 
     /**
-     * 换集/换线前暂停渲染。只关开关，不 close Bitmap（Compose 可能仍在读）。
+     * 换集/换线前暂停渲染。只关开关，不抢锁（避免与 display 死锁卡 UI）。
      */
     fun pauseRendering() {
-        synchronized(this) {
-            renderEnabled = false
-        }
+        renderEnabled = false
     }
 
     fun resumeRendering() {
-        synchronized(this) {
-            renderEnabled = true
-        }
+        renderEnabled = true
     }
 
     /** 清空画面，不销毁 Bitmap，避免 Skiko SIGSEGV */
     fun clearFrameSoft() {
-        synchronized(this) {
-            imageBitmapState.value = null
-        }
+        imageBitmapState.value = null
     }
 
     /**
      * 清理帧渲染资源（用于画质切换等场景）
      */
     fun cleanup() {
-        synchronized(this) {
-            renderEnabled = false
-            imageBitmapState.value = null
+        renderEnabled = false
+        imageBitmapState.value = null
+        synchronized(bitmapSwapLock) {
             currentBitmap?.let { inFlightBitmaps.addLast(it) }
             currentBitmap = null
-            // 换集时保留全部 in-flight，等后续帧自然挤出；避免立刻 close
-            log.debug("帧渲染器资源已清理（软清理）")
         }
+        log.debug("帧渲染器资源已清理（软清理）")
     }
     
     /**
@@ -238,28 +237,25 @@ class VlcjFrameRenderer(
             return
         }
         
-        synchronized(this) {
-            if (isReleased) return
-            isReleased = true
-            
-            try {
-                log.debug("=====开始释放帧渲染器资源=====")
-                renderEnabled = false
-                imageBitmapState.value = null
+        renderEnabled = false
+        isReleased = true
+        imageBitmapState.value = null
+        try {
+            log.debug("=====开始释放帧渲染器资源=====")
+            synchronized(bitmapSwapLock) {
                 currentBitmap?.let { inFlightBitmaps.addLast(it) }
                 currentBitmap = null
-                // 真正退出时才关闭；先清空 UI 引用
                 while (inFlightBitmaps.isNotEmpty()) {
                     val bitmap = inFlightBitmaps.removeFirst()
                     if (!bitmap.isClosed) bitmap.close()
                 }
-                bitmapPool.clear()
-                byteArray = null
-                info = null
-                log.debug("=====帧渲染器资源释放成功=====")
-            } catch (e: Throwable) {
-                log.error("释放帧渲染器资源时出错：", e)
             }
+            bitmapPool.clear()
+            byteArray = null
+            info = null
+            log.debug("=====帧渲染器资源释放成功=====")
+        } catch (e: Throwable) {
+            log.error("释放帧渲染器资源时出错：", e)
         }
     }
 }

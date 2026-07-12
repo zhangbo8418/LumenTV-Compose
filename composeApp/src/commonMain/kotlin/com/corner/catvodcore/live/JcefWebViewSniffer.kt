@@ -18,13 +18,17 @@ import org.cef.handler.CefResourceRequestHandlerAdapter
 import org.cef.misc.BoolRef
 import org.cef.network.CefRequest
 import org.slf4j.LoggerFactory
+import java.awt.BorderLayout
 import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.swing.JFrame
+import javax.swing.SwingUtilities
 
 /**
  * 内嵌 Chromium 拦截请求，嗅探媒体地址。
+ * 使用隐藏窗口模式（非 OSR），避免依赖 JOGL/gluegen_rt.dll。
  */
 object JcefWebViewSniffer {
     private val log = LoggerFactory.getLogger("JcefWebViewSniffer")
@@ -39,12 +43,10 @@ object JcefWebViewSniffer {
         val items = parses ?: ApiConfig.api.parses.filter { it.type == 0 }
         if (items.isEmpty() || webUrl.isBlank()) return null
 
-        val ready = JcefBrowserManager.ensureReady().getOrElse {
+        JcefBrowserManager.ensureReady().getOrElse {
             log.warn("JCEF 不可用: {}", it.message)
             return null
         }
-        // ready 仅用于确认初始化；实际 createClient 用 manager
-        ready.hashCode()
 
         return withContext(Dispatchers.IO) {
             for (item in items) {
@@ -81,6 +83,7 @@ object JcefWebViewSniffer {
         val seenPlayer = LinkedHashSet<String>()
         var browser: CefBrowser? = null
         var client: org.cef.CefClient? = null
+        var hostFrame: JFrame? = null
 
         fun complete(url: String) {
             if (stopped.compareAndSet(false, true) && !found.isCompleted) {
@@ -100,10 +103,9 @@ object JcefWebViewSniffer {
                     if (url.isBlank()) return false
                     val host = runCatching { URI(url).host }.getOrNull().orEmpty()
                     if (host.isNotBlank() && VideoSniffer.isAdHost(host)) {
-                        return true // cancel ad
+                        return true
                     }
                     if (detectNested && playerPattern.containsMatchIn(url) && seenPlayer.add(url) && seenPlayer.size <= 5) {
-                        // 二次嗅探在外层 await 后处理；这里先记下来
                         if (!found.isCompleted) {
                             found.complete("nested:$url")
                         }
@@ -139,14 +141,31 @@ object JcefWebViewSniffer {
             })
             client.addLoadHandler(object : CefLoadHandlerAdapter() {
                 override fun onLoadEnd(browser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
-                    // 页面完成：可扩展执行 click 脚本；当前仅依赖网络嗅探
+                    // 依赖网络嗅探
                 }
             })
 
-            // OSR / windowless
-            browser = client.createBrowser(startUrl, true, false)
-            browser.createImmediately()
-            // 额外 headers：CEF 对全局 header 支持有限，主要靠 URL 自身
+            // 隐藏窗口模式，避免 OSR → JOGL → gluegen_rt.dll
+            val created = arrayOfNulls<CefBrowser>(1)
+            val frameHolder = arrayOfNulls<JFrame>(1)
+            val swingClient = client
+            SwingUtilities.invokeAndWait {
+                val frame = JFrame("jcef-sniff").apply {
+                    isUndecorated = true
+                    setSize(960, 540)
+                    setLocation(-20000, -20000)
+                    defaultCloseOperation = JFrame.DISPOSE_ON_CLOSE
+                }
+                val b = swingClient.createBrowser(startUrl, false, false)
+                frame.contentPane.layout = BorderLayout()
+                frame.contentPane.add(b.uiComponent, BorderLayout.CENTER)
+                frame.isVisible = true
+                b.createImmediately()
+                created[0] = b
+                frameHolder[0] = frame
+            }
+            browser = created[0]
+            hostFrame = frameHolder[0]
             if (headers.isNotEmpty()) {
                 log.debug("JCEF 请求 headers 数量={}", headers.size)
             }
@@ -154,21 +173,35 @@ object JcefWebViewSniffer {
             val result = withTimeoutOrNull(timeoutMs) { found.await() }
             if (result != null && result.startsWith("nested:")) {
                 val nested = result.removePrefix("nested:")
-                browser?.stopLoad()
-                runCatching { browser?.close(true) }
-                runCatching { client?.dispose() }
+                disposeBrowser(browser, client, hostFrame)
+                browser = null
+                client = null
+                hostFrame = null
                 return sniffOnce(nested, headers, timeoutMs, detectNested = false, depth = depth + 1)
             }
             result
-        } catch (e: Exception) {
-            log.warn("JCEF 嗅探失败: {}", startUrl.take(120), e)
+        } catch (e: Throwable) {
+            // UnsatisfiedLinkError 等属于 Error，必须用 Throwable 才能落到 HTTP 兜底
+            log.warn("JCEF 嗅探失败: {} — {}", startUrl.take(120), e.message)
             null
         } finally {
             stopped.set(true)
             if (!found.isCompleted) found.complete(null)
-            runCatching { browser?.stopLoad() }
-            runCatching { browser?.close(true) }
-            runCatching { client?.dispose() }
+            disposeBrowser(browser, client, hostFrame)
+        }
+    }
+
+    private fun disposeBrowser(browser: CefBrowser?, client: org.cef.CefClient?, hostFrame: JFrame?) {
+        runCatching { browser?.stopLoad() }
+        runCatching { browser?.close(true) }
+        runCatching { client?.dispose() }
+        runCatching {
+            if (hostFrame != null) {
+                SwingUtilities.invokeLater {
+                    hostFrame.isVisible = false
+                    hostFrame.dispose()
+                }
+            }
         }
     }
 }

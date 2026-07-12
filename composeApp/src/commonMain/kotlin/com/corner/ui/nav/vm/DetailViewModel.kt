@@ -2090,8 +2090,14 @@ class DetailViewModel : BaseViewModel() {
      * 切换视频播放线路
      */
     fun chooseFlag(detail: Vod, selectedFlag: Flag) {
-        if (selectedFlag.activated) {
+        val selectedName = selectedFlag.flag.orEmpty()
+        if (selectedName.isNotBlank() && selectedName == _currentFlagName.value) {
             log.debug("线路已选中，跳过: {}", selectedFlag.flag)
+            return
+        }
+        // 兼容旧状态：仅 activated 不可靠（show 重复时会误标多条）
+        if (selectedFlag.activated && selectedName == detail.currentFlag.flag) {
+            log.debug("线路已选中(activated)，跳过: {}", selectedFlag.flag)
             return
         }
         flagSwitchJob?.cancel()

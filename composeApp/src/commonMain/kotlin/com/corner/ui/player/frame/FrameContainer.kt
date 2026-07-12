@@ -51,7 +51,7 @@ fun FrameContainer(
             .combinedClickable(
                 enabled = true,
                 onDoubleClick = {
-                    controller.togglePlayStatus()
+                    controller.toggleFullscreen()
                 },
                 interactionSource = interactionSource,
                 indication = null

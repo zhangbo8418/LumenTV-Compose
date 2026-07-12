@@ -55,14 +55,14 @@ data class Vod(
 
         fun Vod.setCurrentFlag(idx: Int) {
             if (vodFlags.isEmpty()) return
-            val flag = vodFlags[idx]
-            if (flag != null) {
-                currentFlag = vodFlags[idx]
-                currentFlag.activated = true
-            }
+            val flag = vodFlags.getOrNull(idx) ?: return
+            vodFlags.forEach { it.activated = false }
+            currentFlag = flag
+            currentFlag.activated = true
         }
 
         fun Vod.setCurrentFlag(flag: Flag) {
+            vodFlags.forEach { it.activated = (it.flag == flag.flag && !flag.flag.isNullOrBlank()) }
             currentFlag = flag
             currentFlag.activated = true
         }
