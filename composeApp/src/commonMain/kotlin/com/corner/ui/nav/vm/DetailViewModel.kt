@@ -42,6 +42,7 @@ import com.corner.ui.onUserSelectEpisode
 import com.corner.ui.player.PlayState
 import com.corner.ui.player.PlayerLifecycleManager
 import com.corner.ui.player.PlayerLifecycleState.*
+import com.corner.ui.player.VodPlaybackHost
 import com.corner.ui.player.vlcj.VlcJInit
 import com.corner.ui.player.vlcj.VlcjFrameController
 import com.corner.util.core.Constants
@@ -59,7 +60,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 
-class DetailViewModel : BaseViewModel() {
+class DetailViewModel : BaseViewModel(), VodPlaybackHost {
     // ==================== 状态管理 ====================
     private val _state = MutableStateFlow(DetailScreenState())
     val state: StateFlow<DetailScreenState> = _state
@@ -75,9 +76,14 @@ class DetailViewModel : BaseViewModel() {
     private val cleanupJob = SupervisorJob()
     private val cleanupScope = CoroutineScope(Dispatchers.IO + cleanupJob)
 
-    // ==================== 播放器相关 ====================
-    val controller: VlcjFrameController = VlcjFrameController(this).apply { VlcJInit.setController(this) }
-    val lifecycleManager: PlayerLifecycleManager = PlayerLifecycleManager(controller)
+    // ==================== 播放器相关（进程级单例，租用而非拥有）====================
+    val controller: VlcjFrameController
+        get() = VlcJInit.ensureCreated()
+    val lifecycleManager: PlayerLifecycleManager
+        get() {
+            VlcJInit.ensureCreated()
+            return checkNotNull(VlcJInit.getLifecycleManager()) { "VLC lifecycleManager 未初始化" }
+        }
     var controllerHistory: History? = null
     val vmPlayerType = SettingStore.getSettingItem(SettingType.PLAYER.id)
         .getPlayerSetting(_state.value.detail.site?.playerType)
@@ -86,11 +92,15 @@ class DetailViewModel : BaseViewModel() {
     private val historyService: HistoryService = ServiceModule.provideHistoryService { controller }
     private val episodeManager: EpisodeManager = ServiceModule.provideEpisodeManager()
 
+    // ==================== VodPlaybackHost ====================
+    override val isDLNA: Boolean
+        get() = _state.value.isDLNA
+
     // ==================== 业务状态 ====================
     @Volatile
     private var launched = false
     @Volatile
-    internal var suppressAutoLineSwitch = false
+    override var suppressAutoLineSwitch = false
     /** playbackError 防抖：避免 error/finished 连发导致 stop/load 风暴卡死 */
     @Volatile
     private var lastPlaybackErrorAtMs = 0L
@@ -127,7 +137,7 @@ class DetailViewModel : BaseViewModel() {
     var isDownloadUrl = MutableStateFlow<Boolean>(false)
     private val lock = Any()
 
-    val isLastEpisode: Boolean
+    override val isLastEpisode: Boolean
         get() {
             val detail = _state.value.detail
             val totalEpisodes = detail.currentFlag.episodes.size
@@ -271,10 +281,10 @@ class DetailViewModel : BaseViewModel() {
     }
 
     /** 供 VLC loadURL 等起播前校验：pending 请求是否仍对应当前集 */
-    internal fun shouldApplyPlayback(): Boolean = !cannotApplyRequest()
+    override fun shouldApplyPlayback(): Boolean = !cannotApplyRequest()
 
     /** 对齐 TV playbackError(msg) → VodFallbackPolicy.playbackError() */
-    fun playbackError(msg: String? = null) {
+    override fun playbackError(msg: String?) {
         if (msg != null && (msg.contains("cancel", ignoreCase = true) || msg.contains("已取消"))) {
             log.debug("跳过 cancellation 触发的 playbackError: {}", msg)
             return
@@ -414,7 +424,21 @@ class DetailViewModel : BaseViewModel() {
      */
     private suspend fun stopPlaybackForRefresh() {
         PlaybackMediaState.playing = false
-        controller.stopForRefreshAndAwait()
+        VlcJInit.stopPlayback()
+    }
+
+    private suspend fun ensurePlayerLifecycleReady() {
+        VlcJInit.ensureCreated()
+        val lm = lifecycleManager
+        when (lm.lifecycleState.value) {
+            Idle, Error -> lm.initializeSync()
+            else -> {
+                // 单例已初始化：确保 surface 可用
+                if (!controller.hasPlayer()) {
+                    controller.vlcjFrameInit()
+                }
+            }
+        }
     }
 
     /**
@@ -459,14 +483,22 @@ class DetailViewModel : BaseViewModel() {
     // ==================== 生命周期管理 ====================
 
     /**
-     * ViewModel销毁时调用，清理所有资源
+     * ViewModel销毁时：只 stop + unbind，不释放全局 VLC 单例。
      */
     override fun onCleared() {
         super.onCleared()
         clearPlaybackControl()
         log.debug("DetailViewModel onCleared - 开始清理")
         supervisor.cancel()
-        log.debug("DetailViewModel onCleared - 清理完成")
+        cleanupScope.launch {
+            try {
+                VlcJInit.unbindHost(this@DetailViewModel)
+                VlcJInit.stopPlayback()
+            } finally {
+                cleanupJob.cancel()
+            }
+        }
+        log.debug("DetailViewModel onCleared - 已提交 stop/unbind")
     }
 
     // ==================== 页面加载流程 ====================
@@ -479,7 +511,8 @@ class DetailViewModel : BaseViewModel() {
         registerPlaybackControl()
         observeRemoteSubtitle()
         if (vmPlayerType.first() == PlayerType.Innie.id) {
-            lifecycleManager.initializeSync()
+            VlcJInit.bindHost(this)
+            ensurePlayerLifecycleReady()
         }
         val chooseVod = loadChooseVod()
 
@@ -613,7 +646,7 @@ class DetailViewModel : BaseViewModel() {
     /**
      * 更新历史记录信息
      */
-    fun updateHistory(it: History) {
+    override fun updateHistory(it: History) {
         scope.launch {
             historyService.updateHistory(it)
         }
@@ -1127,9 +1160,13 @@ class DetailViewModel : BaseViewModel() {
     }
 
     /**
-     * 清理详情页相关资源和状态
+     * 清理详情页相关资源和状态。
+     * @param unbindHost 离开详情页时解绑回调；页内快搜传 false 以保持播放能力。
      */
-    fun clear(releaseController: Boolean = true, onComplete: () -> Unit = {}) {
+    fun clear(
+        unbindHost: Boolean = true,
+        onComplete: () -> Unit = {},
+    ) {
         log.debug("----------开始清理详情页资源----------")
 
         cleanupScope.launch(Dispatchers.IO) {
@@ -1143,7 +1180,7 @@ class DetailViewModel : BaseViewModel() {
                 }
 
                 withTimeoutOrNull(5_000L) {
-                    performCleanup(releaseController)
+                    performCleanup(unbindHost)
                 } ?: log.warn("详情页资源清理超时，强制继续")
                 resetStateAndResources()
 
@@ -1160,30 +1197,14 @@ class DetailViewModel : BaseViewModel() {
         }
     }
 
-    private suspend fun performCleanup(releaseController: Boolean) {
-        log.debug("<清理资源>当前播放器类型:${vmPlayerType.first()}，手动放弃清理播放器资源:{${!releaseController}}")
+    private suspend fun performCleanup(unbindHost: Boolean) {
+        log.debug("<清理资源>播放器类型:{} unbind={}", vmPlayerType.first(), unbindHost)
 
         if (vmPlayerType.first() != PlayerType.Innie.id) return
 
-        if (releaseController) {
-            cleanupPlayerLifecycle()
-        } else {
-            // 对齐 TV：离开详情页仅 stop，不销毁 ExoPlayer/VLC 实例
-            stopPlaybackForRefresh()
-        }
-    }
-
-    private suspend fun cleanupPlayerLifecycle() {
-        try {
-            lifecycleManager.cleanup()
-                .onSuccess {
-                    lifecycleManager.release()
-                        .onSuccess { log.debug("生命周期释放完成") }
-                        .onFailure { e -> log.error("生命周期释放失败", e) }
-                }
-                .onFailure { e -> log.error("生命周期清理失败", e) }
-        } catch (e: Exception) {
-            log.error("清理播放器时发生异常", e)
+        stopPlaybackForRefresh()
+        if (unbindHost) {
+            VlcJInit.unbindHost(this)
         }
     }
 
@@ -1287,16 +1308,9 @@ class DetailViewModel : BaseViewModel() {
 
     private suspend fun recoverFromErrorState(): Boolean {
         return try {
-            val cleanupSuccess = lifecycleManager.cleanup().isSuccess
-            if (!cleanupSuccess) {
-                log.warn("清理资源失败")
-            }
-
-            val initSuccess = lifecycleManager.initializeSync().isSuccess
-            if (!initSuccess) {
-                handleError("重新初始化失败")
-                return false
-            }
+            // 单例：禁止拆实例式 cleanup，只 stop 后重新就绪
+            VlcJInit.stopPlayback()
+            ensurePlayerLifecycleReady()
 
             val loadingSuccess = lifecycleManager.loading().isSuccess
             if (!loadingSuccess) {
@@ -1931,7 +1945,7 @@ class DetailViewModel : BaseViewModel() {
     /**
      * 尝试播放下一集视频
      */
-    fun nextEP() {
+    override fun nextEP() {
         log.info("加载下一集")
         val detail = _state.value.detail
         val currentEp = detail.subEpisode.find { it.activated }

@@ -6,17 +6,15 @@ import com.corner.catvodcore.bean.Vod
 import com.corner.catvodcore.viewmodel.GlobalAppState
 import com.corner.database.entity.History
 import com.corner.server.PlaybackMediaState
-import com.corner.service.player.PlayerOperationUtils
-import com.corner.ui.nav.vm.DetailViewModel
 import com.corner.ui.player.MediaInfo
 import com.corner.ui.player.PlayState
 import com.corner.ui.player.PlayerController
 import com.corner.ui.player.PlayerLifecycleManager
 import com.corner.ui.player.PlayerState
+import com.corner.ui.player.VodPlaybackHost
 import com.corner.ui.scene.SnackBar
 import com.corner.util.core.catch
 import com.corner.util.net.Traffic
-import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,8 +31,6 @@ import uk.co.caprica.vlcj.player.base.MediaPlayer
 import uk.co.caprica.vlcj.player.base.MediaPlayerEventAdapter
 import uk.co.caprica.vlcj.player.base.State
 import uk.co.caprica.vlcj.player.embedded.EmbeddedMediaPlayer
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
 import kotlin.time.Duration
@@ -42,12 +38,35 @@ import kotlin.time.DurationUnit
 
 private val log = LoggerFactory.getLogger("VlcjController")
 
-class VlcjController(val vm: DetailViewModel) : PlayerController {
+class VlcjController : PlayerController {
     var player: EmbeddedMediaPlayer? = null
     private var lifecycleManager: PlayerLifecycleManager? = null
+    @Volatile
+    private var host: VodPlaybackHost? = null
+    @Volatile
+    private var frame: VlcjFrameController? = null
+
     fun setLifecycleManager(manager: PlayerLifecycleManager) {
         this.lifecycleManager = manager
     }
+
+    fun lifecycleManagerOrNull(): PlayerLifecycleManager? = lifecycleManager
+
+    fun attachFrame(frameController: VlcjFrameController) {
+        frame = frameController
+    }
+
+    fun bindHost(playbackHost: VodPlaybackHost) {
+        host = playbackHost
+    }
+
+    fun unbindHost(playbackHost: VodPlaybackHost) {
+        if (host === playbackHost) {
+            host = null
+        }
+    }
+
+    fun currentHost(): VodPlaybackHost? = host
 
     override var playerLoading = false
     override var playerPlaying = false
@@ -60,21 +79,11 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
     private var currentSpeed = 1.0F
     var scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     override var endingHandled = false          // 视频结束处理，避免重复操作
-    private var cleanupJob: Job? = null         // 添加清理任务跟踪变量
     private var trafficJob: Job? = null         // 缓冲网速轮询（对齐 TV Traffic）
-    private var isCleaned = false               // 添加清理状态标志
     private var activeSubtitleUrl: String = ""
     private val mediaMutex = Mutex()
     private val vlcStateLock = Any()
-    @Volatile
-    private var vlcThread = newVlcExecutor()
-    private val refreshSupervisor = SupervisorJob()
-    private var refreshStopJob: Job? = null
     private val loadGeneration = AtomicInteger(0)
-
-    private fun newVlcExecutor() = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "vlc-play").apply { isDaemon = true }
-    }
 
     /**
      * 对齐 TV player().clear()：清空当前播放状态，不阻塞 VLC。
@@ -86,14 +95,13 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
     }
 
     /**
-     * 换集/换线：递增 generation，并从其他线程 stop + 重建队列，
-     * 避免 media().play 卡死占住 vlc-play 导致后续换集永不「设置媒体」。
+     * 换集/换线：递增 generation，作废排队中的 loadURL。
      */
     fun invalidatePendingLoads(): Int {
         val gen = loadGeneration.incrementAndGet()
         expectedMrl = ""
         clearPlaybackState()
-        // 换集 stop 会产生 finished/stopped，先标 loading 避免误触发秒停换线
+        // 换集期间 finished/stopped 可能秒到，先标 loading 避免误触发自动换线
         playerLoading = true
         abortStuckVlcLoad("invalidate gen=$gen")
         return gen
@@ -123,67 +131,50 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
         return norm(a) == norm(b)
     }
 
-    private suspend fun awaitRefreshStop(timeoutMs: Long = 3_000L) {
-        val job = refreshStopJob ?: return
-        withTimeoutOrNull(timeoutMs) { job.join() }
-    }
-
-    /** 换集：清状态并异步打断卡住的 play（不在此线程阻塞） */
+    /** 换集/离开详情：清状态、作废排队，并立刻静音暂停 */
     fun stopForRefresh() {
         clearPlaybackState()
         playerLoading = true
         abortStuckVlcLoad("stopForRefresh")
     }
 
-    /** @deprecated 与 stopForRefresh 相同 */
-    fun softStopForRefresh() {
-        stopForRefresh()
-    }
-
     /**
-     * 换集/换线中断：不调用 stop，也不销毁/重建播放器。
-     * 先前「置空 player + 新建 factory」会导致 recreate 卡住且 loadURL 报「媒体对象为空」。
-     * 只作废 generation；下一趟直接 media().play(新地址)。
+     * 换集/换线中断：不作阻塞 stop，也不销毁播放器；作废 generation 并临时静音暂停。
      */
-    private val abortEpoch = AtomicInteger(0)
     @Volatile
     private var lastAbortAtMs: Long = 0L
-    @Volatile
-    private var abortLatch: java.util.concurrent.CountDownLatch? = null
     @Volatile
     var onPlayerRecreated: ((EmbeddedMediaPlayer) -> Unit)? = null
 
     private fun abortStuckVlcLoad(reason: String) {
-        abortEpoch.incrementAndGet()
         lastAbortAtMs = System.currentTimeMillis()
-        currentLoadFuture = null
         expectedMrl = ""
-        log.info("中断 VLC 加载(保留播放器，不 stop): {}", reason)
-        // 立即完成，不阻塞后续 loadURL
-        abortLatch?.countDown()
-        abortLatch = null
+        log.info("中断 VLC 加载(保留播放器): {}", reason)
+        silencePlayback(reason)
     }
 
-    /** 兼容旧调用；当前 abort 同步完成，几乎立即返回 */
-    suspend fun awaitLastAbort(timeoutMs: Long = 400L) {
-        val latch = abortLatch ?: return
-        withContext(Dispatchers.IO) {
-            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+    /**
+     * 立刻静音并 pause，避免离开页面/换线后后台仍有声音。
+     * 不改 _state.isMuted，以便下次起播按用户静音偏好恢复。
+     */
+    private fun silencePlayback(reason: String) {
+        val p = player ?: return
+        runCatching {
+            p.audio()?.setMute(true)
+            p.controls()?.setPause(true)
+            _state.update { it.copy(state = PlayState.PAUSE) }
+            log.info("已临时静音并暂停: {}", reason)
+        }.onFailure {
+            log.warn("临时静音暂停失败: {}", it.message)
         }
     }
 
-    /** 保留：异常场景下重建（当前 loadURL 已不依赖此队列起播） */
-    private fun resetVlcThread(reason: String) {
-        synchronized(vlcStateLock) {
-            log.warn("重建 VLC 线程: {}", reason)
-            val old = vlcThread
-            vlcThread = newVlcExecutor()
-            old.shutdownNow()
-        }
+    /** 新媒体起播前：若用户未主动静音，则取消临时 mute */
+    private fun restoreAudioIfNeeded() {
+        if (_state.value.isMuted) return
+        runCatching { player?.audio()?.setMute(false) }
     }
 
-    @Volatile
-    private var currentLoadFuture: java.util.concurrent.Future<*>? = null
     /** 当前期望播放的 MRL，用于丢弃换媒体时旧流的 finished/stopped */
     @Volatile
     private var expectedMrl: String = ""
@@ -192,9 +183,9 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
 
     // 视频播放状态
     private var playerStartTime: Long = 0
-    private var playerRealStartTime: Long = 0   // 记录实际开始播放的时间
+    private var playerRealStartTime: Long = 0
     private var playerEndTime: Long = 0
-    private val decodeFailureTureShould = 5000L // 5秒阈值
+    private val decodeFailureTureShould = 5000L
 
     private val vlcjArgs = mutableListOf(
         "-q",                                   // 最低级别日志
@@ -290,7 +281,7 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
             playerPlaying = true
             loadStartedAtMs = 0L
             // 换集后强制恢复渲染，避免黑屏
-            vm.controller.resumeVideoRendering()
+            frame?.resumeVideoRendering()
             if (playerRealStartTime == 0L) {
                 playerRealStartTime = System.currentTimeMillis()
                 log.info("播放真正开始，设置实际开始时间: $playerRealStartTime")
@@ -352,7 +343,7 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
                 log.debug("未真正开始播放，跳过自动换线")
                 return
             }
-            if (vm.suppressAutoLineSwitch) {
+            if (host?.suppressAutoLineSwitch == true) {
                 log.debug("正在切换线路，跳过自动换线")
                 return
             }
@@ -366,7 +357,7 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
             if (playDuration < decodeFailureTureShould) {
                 log.warn("播放时长过短 ({}ms)，触发 playbackError", playDuration)
                 _state.update { it.copy(state = PlayState.PAUSE) }
-                scope.launch { vm.playbackError("播放失败，时长过短") }
+                scope.launch { host?.playbackError("播放失败，时长过短") }
                 return
             }
 
@@ -382,7 +373,7 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
                     mediaLength,
                 )
                 _state.update { it.copy(state = PlayState.PAUSE) }
-                scope.launch { vm.playbackError("播放中断") }
+                scope.launch { host?.playbackError("播放中断") }
                 return
             }
             if (isHlsMrl(mrl) && mediaLength > 60_000L && playDuration < mediaLength - 15_000L && playDuration < 60_000L) {
@@ -392,7 +383,7 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
                     mediaLength,
                 )
                 _state.update { it.copy(state = PlayState.PAUSE) }
-                scope.launch { vm.playbackError("播放中断") }
+                scope.launch { host?.playbackError("播放中断") }
                 return
             }
             if (isHlsMrl(mrl) || isStreamingUrl(mrl)) {
@@ -414,12 +405,13 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
                 delay(500)
                 log.debug("finished:运行协程任务")
                 try {
-                    if (vm.state.value.isDLNA) {
+                    val h = host
+                    if (h?.isDLNA == true) {
                         log.info("DLNA投屏模式，跳过自动换集")
                         SnackBar.postMsg("投屏播放完成", type = SnackBar.MessageType.INFO)
-                    } else if (!vm.isLastEpisode) {
+                    } else if (h != null && !h.isLastEpisode) {
                         log.info("切换下一集")
-                        vm.nextEP()
+                        h.nextEP()
                     } else {
                         log.info("已经是最后一集了")
                         SnackBar.postMsg("已经是最后一集了", type = SnackBar.MessageType.INFO)
@@ -456,7 +448,7 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
                     if (ending != null && ending != -1L && ending <= newTime && !endingHandled) {
                         stop()
                         endingHandled = true
-                        vm.nextEP()
+                        host?.nextEP()
                     }
 
                     // 每 25 秒同步一次进度，但要确保播放器已真正开始播放且时间大于0
@@ -479,8 +471,8 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
             stopTrafficMonitor()
             _state.update { it.copy(state = PlayState.ERROR, msg = "播放错误") }
             scope.launch {
-                runCatching { history.value?.let { vm.updateHistory(it) } }
-                vm.playbackError("播放错误")
+                runCatching { history.value?.let { host?.updateHistory(it) } }
+                host?.playbackError("播放错误")
             }
         }
     }
@@ -491,55 +483,36 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
         get() = _state.asStateFlow()
 
     override fun init() {
-        isCleaned = false
-
         try {
-            factory = MediaPlayerFactory(vlcjArgs)
-            player = factory.mediaPlayers()?.newEmbeddedMediaPlayer()?.apply {
-                events().addMediaPlayerEventListener(stateListener)
-                video().setScale(0.0f)
-                // 把 VLC 当前静音状态同步到 PlayerState
-                val muted = audio()?.isMute ?: false
-                _state.update { it.copy(isMuted = muted) }
+            if (player != null && ::factory.isInitialized) {
+                log.debug("VLC 已初始化，跳过重复创建")
+                return
+            }
+            if (!::factory.isInitialized) {
+                factory = MediaPlayerFactory(vlcjArgs)
+            }
+            if (player == null) {
+                player = factory.mediaPlayers()?.newEmbeddedMediaPlayer()?.apply {
+                    events().addMediaPlayerEventListener(stateListener)
+                    video().setScale(0.0f)
+                    val muted = audio()?.isMute ?: false
+                    _state.update { it.copy(isMuted = muted) }
+                }
             }
         } catch (e: Exception) {
-            // 处理异常
-            // dispose()
             log.error("vlcj初始化失败", e)
             SnackBar.postMsg("vlcj初始化失败!", type = SnackBar.MessageType.ERROR)
         }
     }
 
+    /** 单例安全：只停播/清排队，不拆线程、不永久标记 cleaned */
     override suspend fun cleanupAsync() {
         withContext(Dispatchers.IO) {
-            if (isCleaned) return@withContext
-            isCleaned = true
             stopTrafficMonitor()
             invalidatePendingLoads()
-            refreshSupervisor.cancelChildren(CancellationException("cleanup"))
-            runCatching { vlcThread.shutdownNow() }
-
-            withTimeoutOrNull(5_000L) {
-                PlayerOperationUtils.safeExecute(
-                    operationName = "清理资源",
-                    showUserError = false,
-                    timeoutMillis = 3_000L,
-                ) {
-                    log.debug("开始异步清理资源...")
-                    player?.let { p ->
-                        PlayerOperationUtils.safeExecute(
-                            operationName = "停止播放",
-                            showUserError = false,
-                            timeoutMillis = 2_000L,
-                        ) {
-                            p.controls()?.stop()
-                        }
-                    }
-                    deferredEffects.clear()
-                    log.debug("异步清理资源完成!")
-                }
-            } ?: log.warn("播放器资源清理超时，跳过后续等待")
-            scope.cancel("异步停止播放")
+            silencePlayback("cleanupAsync")
+            deferredEffects.clear()
+            log.debug("cleanupAsync 完成（保留单例实例）")
         }
     }
 
@@ -599,12 +572,12 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
             log.warn("拒绝非媒体地址，避免当作本地文件: {}", url)
             return false
         }
-        if (isLoadGenerationStale(generation) || !vm.shouldApplyPlayback() || isCleaned) {
+        if (isLoadGenerationStale(generation) || host?.shouldApplyPlayback() != true) {
             log.info("丢弃过期 loadURL: 入队前校验失败 generation={}", generation)
             return false
         }
 
-        vm.controller.resumeVideoRendering()
+        frame?.resumeVideoRendering()
         log.info("loadURL 开始 generation={}", generation)
         return executeLoadOnVlcThread(generation, url)
     }
@@ -615,7 +588,7 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
             log.info("丢弃过期 loadURL: generation={}", generation)
             return false
         }
-        if (!vm.shouldApplyPlayback()) {
+        if (host?.shouldApplyPlayback() != true) {
             log.info("丢弃过期 loadURL: pending 与当前集不一致")
             return false
         }
@@ -635,7 +608,7 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
         }
         if (shouldSkip) return true
 
-        if (isLoadGenerationStale(generation) || !vm.shouldApplyPlayback()) {
+        if (isLoadGenerationStale(generation) || host?.shouldApplyPlayback() != true) {
             log.info("丢弃过期 loadURL: 起播前校验失败 generation={}", generation)
             synchronized(vlcStateLock) { playerLoading = false }
             return false
@@ -667,6 +640,7 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
         expectedMrl = url
         loadStartedAtMs = System.currentTimeMillis()
         startTrafficMonitor()
+        restoreAudioIfNeeded()
         _state.update { it.copy(state = PlayState.BUFFERING, bufferProgression = 0f) }
         // 交给 VLC native 队列，立刻返回，避免阻塞换集。
         // 不要先 controls().stop()：与 display/play 并发时易在 libvlc 内死锁。
@@ -676,6 +650,7 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
                 return@submit
             }
             try {
+                restoreAudioIfNeeded()
                 val ok = playable.media().play(url, *buildMediaOptions().toTypedArray())
                 if (isLoadGenerationStale(generation)) {
                     log.info("loadURL 完成后已过期，忽略 generation={}", generation)
@@ -763,7 +738,7 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
                 log.warn("停止播放失败或超时: {}", e.message)
             }
         }
-        vm.controller.clearVideoFrame()
+        frame?.clearVideoFrame()
     }
 
     private fun isStreamingUrl(mrl: String): Boolean {
@@ -950,10 +925,6 @@ class VlcjController(val vm: DetailViewModel) : PlayerController {
         } catch (_: Exception) {
             ""
         }
-    }
-
-    suspend fun awaitRefreshStopForSwitch() {
-        awaitRefreshStop()
     }
 
     override fun speed(speed: Float) = catch {

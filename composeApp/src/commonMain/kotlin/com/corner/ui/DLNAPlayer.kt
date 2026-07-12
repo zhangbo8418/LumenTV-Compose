@@ -59,7 +59,7 @@ fun WindowScope.DLNAPlayer(vm:DetailViewModel, onClickBack:() -> Unit) {
 
     fun cleanupResources() {
         if (vm.vmPlayerType.first() == PlayerType.Innie.id && !GlobalAppState.closeApp.value) {
-            log.debug("DLNAPlayer 销毁 - 调用 DetailViewModel.clear() 释放资源")
+            log.debug("DLNAPlayer 销毁 - stop/unbind 全局点播播放器")
             vm.clear()
         }
     }

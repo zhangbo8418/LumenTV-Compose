@@ -157,8 +157,8 @@ fun WindowScope.DetailScene(vm: DetailViewModel, onClickBack: () -> Unit) {
         }
         onDispose {
             if (!GlobalAppState.closeApp.value) {
-                // 对齐 TV：离开详情仅 stop 播放，保留 VLC 实例以便快速返回
-                vm.clear(releaseController = false)
+                // 离开详情：stop + unbind，保留全局 VLC 单例
+                vm.clear(unbindHost = true)
                 if (localShowPngDialog) {
                     BrowserUtils.cleanup()
                 }
@@ -217,15 +217,9 @@ fun WindowScope.DetailScene(vm: DetailViewModel, onClickBack: () -> Unit) {
                                 onClick = {
                                     scope.launch {
 
-                                        /*
-                                         * 不要使用controller.release()方法，释放资源会为isReleased = true，
-                                         * vm.quickSearch()在完成任务时会调用loadDetail函数，
-                                         * 加载完成后会调用setDetail函数，最后会调用startPlay()，
-                                         * 但是controller.isReleased为true，导致无法播放
-                                         * 传入releaseController = false时不释放播放器资源
-                                         * */
-                                        log.info("<DetailScreen>执行快速搜索，释放非播放器的其他资源")
-                                        vm.clear(false) {
+                                        // 页内快搜：停播但保持 host 绑定，避免 isReleased 导致无法再播
+                                        log.info("<DetailScreen>执行快速搜索")
+                                        vm.clear(unbindHost = false) {
                                             vm.quickSearch()
                                             SnackBar.postMsg("执行快速搜索", type = SnackBar.MessageType.INFO)
                                         }

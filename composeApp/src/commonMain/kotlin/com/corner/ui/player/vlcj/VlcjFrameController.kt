@@ -4,10 +4,10 @@ import com.corner.ui.scene.SnackBar
 import androidx.compose.runtime.MutableState
 import androidx.compose.ui.graphics.ImageBitmap
 import com.corner.database.entity.History
-import com.corner.ui.nav.vm.DetailViewModel
 import com.corner.ui.player.BitmapPool
 import com.corner.ui.player.PlayerController
 import com.corner.ui.player.PlayerLifecycleManager
+import com.corner.ui.player.VodPlaybackHost
 import com.corner.ui.player.frame.FramePlayerController
 import com.corner.ui.player.frame.FrameRenderer
 import com.corner.util.play.BrowserUtils.scope
@@ -31,8 +31,7 @@ import kotlin.math.max
  * 实现 AutoCloseable 接口，确保资源能够被正确清理
  */
 class VlcjFrameController(
-    component: DetailViewModel,
-    private val controller: VlcjController = VlcjController(component),
+    private val controller: VlcjController = VlcjController(),
     private val bitmapPool: BitmapPool = BitmapPool(3)
 ) : FramePlayerController, FrameRenderer, PlayerController by controller, AutoCloseable {
     private val log = thisLogger()
@@ -54,6 +53,20 @@ class VlcjFrameController(
     
     private val _bytes = MutableStateFlow<ByteArray?>(null)
     override val bytes = _bytes.asStateFlow()
+
+    init {
+        controller.attachFrame(this)
+    }
+
+    fun bindHost(host: VodPlaybackHost) {
+        controller.bindHost(host)
+    }
+
+    fun unbindHost(host: VodPlaybackHost) {
+        controller.unbindHost(host)
+    }
+
+    fun vlcController(): VlcjController = controller
 
     /**
      * 加载视频URL。
@@ -81,13 +94,12 @@ class VlcjFrameController(
         frameRenderer.clearFrameSoft()
     }
 
-    /** 换集：先停渲染并解绑 surface；后台换新 factory，短等即可 */
+    /** 换集/离页：停渲染、解绑 surface、静音暂停，保留原生实例 */
     suspend fun stopForRefreshAndAwait() {
         frameRenderer.pauseRendering()
         frameRenderer.clearFrameSoft()
         detachVideoSurface()
         controller.stopForRefresh()
-        controller.awaitLastAbort(400L)
     }
 
     fun stopForRefresh() {
@@ -128,22 +140,33 @@ class VlcjFrameController(
 
     override fun vlcjFrameInit() {
         try {
-            val lifecycleManager = PlayerLifecycleManager(controller)
-            controller.setLifecycleManager(lifecycleManager)
+            // 单例复用：已有 player 时只重绑 surface，不重建 factory
+            if (controller.isPlayerInstanceReady() && !isReleased) {
+                ensureVideoSurface()
+                return
+            }
+            if (controller.lifecycleManagerOrNull() == null) {
+                val lifecycleManager = PlayerLifecycleManager(controller)
+                controller.setLifecycleManager(lifecycleManager)
+            }
             controller.onPlayerRecreated = { _ ->
                 attachVideoSurface()
             }
             controller.init()
-            
-            videoSurface = frameRenderer.createVideoSurface()
-            controller.player?.videoSurface()?.set(videoSurface)
-            frameRenderer.resumeRendering()
-            
+            ensureVideoSurface()
             isReleased = false
         } catch (e: Exception) {
             log.error("视频表面初始化失败", e)
             SnackBar.postMsg("视频表面初始化失败,请尝试重启软件或去GITHUB反馈！", type = SnackBar.MessageType.ERROR)
         }
+    }
+
+    private fun ensureVideoSurface() {
+        if (videoSurface == null) {
+            videoSurface = frameRenderer.createVideoSurface()
+        }
+        controller.player?.videoSurface()?.set(videoSurface)
+        frameRenderer.resumeRendering()
     }
     
     /**
@@ -175,7 +198,7 @@ class VlcjFrameController(
             delay(10)
             controller.history.collect {
                 if (it != null) {
-                    controller.vm.updateHistory(it)
+                    controller.currentHost()?.updateHistory(it)
                 }
             }
         }

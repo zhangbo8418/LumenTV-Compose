@@ -309,15 +309,13 @@ class PlayerLifecycleManager(
      * 从错误状态恢复
      */
     private suspend fun recoverFromError(): Result<Unit> {
-        val cleanupResult = cleanup()
-        cleanupResult.onFailure { log.warn("清理资源失败，继续尝试重新初始化: {}", it.message) }
-        
+        // 点播为进程级单例：不可走拆实例式 cleanup，只重新 ensure init
         val initResult = initializeSync()
         if (initResult.isFailure) return initResult
-        
+
         val loadingResult = loading()
         if (loadingResult.isFailure) return loadingResult
-        
+
         return ready()
     }
 
