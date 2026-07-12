@@ -168,12 +168,84 @@ object JarSpiderHostClient {
         log.info("JarSpiderHost ready")
     }
 
+    /**
+     * 必须与主进程同源 JVM（本工程 class 为 61 / Java 17）。
+     * 打包后若退回 PATH 上的 `java`，Windows 常命中系统自带的 Java 8 → UnsupportedClassVersionError。
+     */
     private fun resolveJavaBinary(): String {
-        val home = System.getProperty("java.home") ?: return "java"
-        val win = File(home, "bin/java.exe")
-        if (win.isFile) return win.absolutePath
-        val unix = File(home, "bin/java")
-        if (unix.isFile) return unix.absolutePath
+        val isWin = System.getProperty("os.name").orEmpty().lowercase().contains("win")
+        val javaName = if (isWin) "java.exe" else "java"
+        val javawName = if (isWin) "javaw.exe" else "javaw"
+        val candidates = LinkedHashSet<File>()
+
+        fun addJava(dir: File?) {
+            if (dir == null) return
+            candidates += File(dir, javaName)
+            candidates += File(dir, javawName)
+        }
+
+        fun addRuntimeBin(appRoot: File?) {
+            if (appRoot == null) return
+            addJava(File(appRoot, "runtime/bin"))
+            addJava(File(appRoot, "bin"))
+            appRoot.parentFile?.let { parent ->
+                addJava(File(parent, "runtime/bin"))
+            }
+        }
+
+        // 1) 当前进程命令行：gradle run 时是 java；jpackage 时是 LumenTV.exe
+        ProcessHandle.current().info().command().orElse(null)?.let { cmd ->
+            val exe = File(cmd)
+            val name = exe.name.lowercase()
+            when {
+                name == "java" || name == "java.exe" || name == "javaw" || name == "javaw.exe" -> {
+                    addJava(exe.parentFile)
+                }
+                else -> addRuntimeBin(exe.parentFile)
+            }
+        }
+
+        // 2) java.home（正常 JVM / 部分打包布局）
+        System.getProperty("java.home")?.takeIf { it.isNotBlank() }?.let { home ->
+            addJava(File(home, "bin"))
+            addJava(File(home, "jre/bin"))
+        }
+
+        // 3) jpackage 属性
+        System.getProperty("jpackage.app-path")?.takeIf { it.isNotBlank() }?.let { appPath ->
+            val app = File(appPath)
+            addRuntimeBin(if (app.isFile) app.parentFile else app)
+        }
+
+        // 4) 从主 jar 位置推 runtime（…/app/*.jar → …/runtime/bin/java）
+        runCatching {
+            val loc = JarSpiderHostClient::class.java.protectionDomain?.codeSource?.location ?: return@runCatching
+            val file = File(loc.toURI())
+            val appDir = if (file.isFile) file.parentFile else file
+            addRuntimeBin(appDir)
+            addRuntimeBin(appDir?.parentFile)
+        }
+
+        val preferred = candidates.firstOrNull { f ->
+            f.isFile && f.name.lowercase().let { it == "java" || it == "java.exe" }
+        } ?: candidates.firstOrNull { it.isFile }
+
+        if (preferred != null) {
+            log.info(
+                "JarSpiderHost java resolved: {} (java.home={}, version={})",
+                preferred.absolutePath,
+                System.getProperty("java.home"),
+                System.getProperty("java.version"),
+            )
+            return preferred.absolutePath
+        }
+
+        log.warn(
+            "JarSpiderHost 未找到捆绑 java，将使用 PATH 的 java（易命中 Java 8）。java.home={} java.version={} tried={}",
+            System.getProperty("java.home"),
+            System.getProperty("java.version"),
+            candidates.map { it.path },
+        )
         return "java"
     }
 

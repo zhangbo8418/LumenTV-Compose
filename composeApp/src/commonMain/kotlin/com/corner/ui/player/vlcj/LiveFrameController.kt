@@ -7,10 +7,8 @@ import com.corner.ui.player.frame.FramePlayerController
 import com.corner.ui.player.frame.FrameRenderer
 import com.corner.ui.scene.SnackBar
 import com.corner.util.thisLogger
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 
 class LiveFrameController(
     private val controller: LiveVlcjController = LiveVlcjController(),
@@ -31,18 +29,12 @@ class LiveFrameController(
     override val bytes = _bytes.asStateFlow()
 
     override fun load(url: String): PlayerController {
-        controller.controllerScope.launch {
-            controller.loadURL(url, 10000, emptyMap())
-            controller.play()
-        }
+        controller.switchChannel(url, emptyMap())
         return controller
     }
 
     fun load(url: String, headers: Map<String, String>): PlayerController {
-        controller.controllerScope.launch {
-            controller.loadURL(url, 10000, headers)
-            controller.play()
-        }
+        controller.switchChannel(url, headers)
         return controller
     }
 

@@ -12,6 +12,7 @@ import com.corner.ui.player.PlayerState
 import com.corner.ui.scene.SnackBar
 import com.corner.util.core.catch
 import com.corner.util.net.Traffic
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,15 +25,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.apache.commons.lang3.StringUtils
 import org.slf4j.LoggerFactory
 import uk.co.caprica.vlcj.factory.MediaPlayerFactory
 import uk.co.caprica.vlcj.player.base.MediaPlayer
 import uk.co.caprica.vlcj.player.base.MediaPlayerEventAdapter
-import uk.co.caprica.vlcj.player.base.State
 import uk.co.caprica.vlcj.player.embedded.EmbeddedMediaPlayer
+import java.util.concurrent.atomic.AtomicInteger
 
 private val log = LoggerFactory.getLogger("LiveVlcjController")
 
@@ -56,6 +56,8 @@ class LiveVlcjController : PlayerController {
     var controllerScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var isCleaned = false
     private var trafficJob: Job? = null
+    private var switchJob: Job? = null
+    private val switchGeneration = AtomicInteger(0)
 
     private val vlcjArgs = listOf(
         "-q",
@@ -200,9 +202,27 @@ class LiveVlcjController : PlayerController {
     }
 
     override fun load(url: String): PlayerController {
-        controllerScope.launch {
-            loadURL(url, 10000, emptyMap())
-            play()
+        switchChannel(url, emptyMap())
+        return this
+    }
+
+    /** 换台/换线：先 pause 再 prepare，避免旧台音频拖尾；快速连切只保留最后一档 */
+    fun switchChannel(url: String, headers: Map<String, String>): PlayerController {
+        val gen = switchGeneration.incrementAndGet()
+        switchJob?.cancel()
+        switchJob = controllerScope.launch {
+            runCatching { player?.controls()?.setPause(true) }
+            try {
+                loadURL(url, 10000, headers)
+                if (gen != switchGeneration.get() || !isActive) return@launch
+                catch { player?.controls()?.play() }
+            } catch (_: CancellationException) {
+                // 被下一次换台取消
+            } catch (e: Exception) {
+                if (gen == switchGeneration.get()) {
+                    log.error("直播换台失败", e)
+                }
+            }
         }
         return this
     }
@@ -218,6 +238,7 @@ class LiveVlcjController : PlayerController {
         }
         try {
             playerLoading = true
+            runCatching { player?.controls()?.setPause(true) }
             val optionsList = buildVlcOptions(headers)
             player?.media()?.prepare(url, *optionsList.toTypedArray())
         } catch (e: Exception) {
