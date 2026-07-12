@@ -131,15 +131,50 @@ class VlcjController : PlayerController {
         return norm(a) == norm(b)
     }
 
-    /** 换集/离开详情：清状态、作废排队，并立刻静音暂停 */
+    /**
+     * 离开详情：真正 stop 结束播放（保留单例实例，不 dispose）。
+     * stop 带短超时，卡住则回退 pause，避免阻塞返回。
+     */
     fun stopForRefresh() {
         clearPlaybackState()
-        playerLoading = true
+        playerLoading = false
         abortStuckVlcLoad("stopForRefresh")
+        runCatching {
+            player?.controls()?.stop()
+            _state.update { it.copy(state = PlayState.PAUSE) }
+            log.info("已 stop 播放（保留实例）")
+        }.onFailure {
+            log.warn("stop 失败，回退 pause: {}", it.message)
+            runCatching {
+                player?.controls()?.setPause(true)
+                _state.update { it.copy(state = PlayState.PAUSE) }
+            }
+        }
+    }
+
+    /** 离开详情的挂起版：带超时的 stop，避免 libvlc 卡死拖住返回 */
+    suspend fun stopPlaybackKeepingInstance() {
+        clearPlaybackState()
+        playerLoading = false
+        abortStuckVlcLoad("leaveDetail")
+        try {
+            withTimeout(2_000) {
+                withContext(Dispatchers.IO) {
+                    player?.controls()?.stop()
+                }
+            }
+            log.info("已 stop 播放（保留实例）")
+        } catch (e: Exception) {
+            log.warn("stop 超时/失败，回退 pause: {}", e.message)
+            runCatching { player?.controls()?.setPause(true) }
+        }
+        _state.update { it.copy(state = PlayState.PAUSE) }
+        frame?.clearVideoFrame()
     }
 
     /**
-     * 换集/换线中断：不作阻塞 stop，也不销毁播放器；作废 generation 并临时静音暂停。
+     * 换集/换线：只作废 generation，不 pause/mute。
+     * 新地址由后续 media().play 直接覆盖。
      */
     @Volatile
     private var lastAbortAtMs: Long = 0L
@@ -150,29 +185,6 @@ class VlcjController : PlayerController {
         lastAbortAtMs = System.currentTimeMillis()
         expectedMrl = ""
         log.info("中断 VLC 加载(保留播放器): {}", reason)
-        silencePlayback(reason)
-    }
-
-    /**
-     * 立刻静音并 pause，避免离开页面/换线后后台仍有声音。
-     * 不改 _state.isMuted，以便下次起播按用户静音偏好恢复。
-     */
-    private fun silencePlayback(reason: String) {
-        val p = player ?: return
-        runCatching {
-            p.audio()?.setMute(true)
-            p.controls()?.setPause(true)
-            _state.update { it.copy(state = PlayState.PAUSE) }
-            log.info("已临时静音并暂停: {}", reason)
-        }.onFailure {
-            log.warn("临时静音暂停失败: {}", it.message)
-        }
-    }
-
-    /** 新媒体起播前：若用户未主动静音，则取消临时 mute */
-    private fun restoreAudioIfNeeded() {
-        if (_state.value.isMuted) return
-        runCatching { player?.audio()?.setMute(false) }
     }
 
     /** 当前期望播放的 MRL，用于丢弃换媒体时旧流的 finished/stopped */
@@ -505,12 +517,15 @@ class VlcjController : PlayerController {
         }
     }
 
-    /** 单例安全：只停播/清排队，不拆线程、不永久标记 cleaned */
+    /** 单例安全：只停播/清排队，不拆线程 */
     override suspend fun cleanupAsync() {
         withContext(Dispatchers.IO) {
             stopTrafficMonitor()
             invalidatePendingLoads()
-            silencePlayback("cleanupAsync")
+            runCatching {
+                player?.controls()?.setPause(true)
+                _state.update { it.copy(state = PlayState.PAUSE) }
+            }
             deferredEffects.clear()
             log.debug("cleanupAsync 完成（保留单例实例）")
         }
@@ -640,7 +655,6 @@ class VlcjController : PlayerController {
         expectedMrl = url
         loadStartedAtMs = System.currentTimeMillis()
         startTrafficMonitor()
-        restoreAudioIfNeeded()
         _state.update { it.copy(state = PlayState.BUFFERING, bufferProgression = 0f) }
         // 交给 VLC native 队列，立刻返回，避免阻塞换集。
         // 不要先 controls().stop()：与 display/play 并发时易在 libvlc 内死锁。
@@ -650,7 +664,6 @@ class VlcjController : PlayerController {
                 return@submit
             }
             try {
-                restoreAudioIfNeeded()
                 val ok = playable.media().play(url, *buildMediaOptions().toTypedArray())
                 if (isLoadGenerationStale(generation)) {
                     log.info("loadURL 完成后已过期，忽略 generation={}", generation)

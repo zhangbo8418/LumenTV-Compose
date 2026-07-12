@@ -94,12 +94,20 @@ class VlcjFrameController(
         frameRenderer.clearFrameSoft()
     }
 
-    /** 换集/离页：停渲染、解绑 surface、静音暂停，保留原生实例 */
+    /** 换集/换源：停渲染并作废排队，不 pause（随后 loadURL 直接播新地址） */
+    suspend fun prepareForUrlSwitch() {
+        frameRenderer.pauseRendering()
+        frameRenderer.clearFrameSoft()
+        detachVideoSurface()
+        controller.invalidatePendingLoads()
+    }
+
+    /** 离开详情：停渲染并 stop 结束播放，保留单例 */
     suspend fun stopForRefreshAndAwait() {
         frameRenderer.pauseRendering()
         frameRenderer.clearFrameSoft()
         detachVideoSurface()
-        controller.stopForRefresh()
+        controller.stopPlaybackKeepingInstance()
     }
 
     fun stopForRefresh() {

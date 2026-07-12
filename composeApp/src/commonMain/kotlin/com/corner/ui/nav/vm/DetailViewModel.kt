@@ -420,9 +420,15 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
     }
 
     /**
-     * 对齐 TV stopPlaybackForRefresh()：stop + clear + 作废 VLC 排队 loadURL。
+     * 换集/换源前：作废排队，不 pause/mute；随后 loadURL 播新地址。
      */
     private suspend fun stopPlaybackForRefresh() {
+        PlaybackMediaState.playing = false
+        controller.prepareForUrlSwitch()
+    }
+
+    /** 离开详情：真正 stop 停播，保留单例 */
+    private suspend fun endPlayback() {
         PlaybackMediaState.playing = false
         VlcJInit.stopPlayback()
     }
@@ -1202,7 +1208,7 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
 
         if (vmPlayerType.first() != PlayerType.Innie.id) return
 
-        stopPlaybackForRefresh()
+        endPlayback()
         if (unbindHost) {
             VlcJInit.unbindHost(this)
         }
@@ -1308,8 +1314,8 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
 
     private suspend fun recoverFromErrorState(): Boolean {
         return try {
-            // 单例：禁止拆实例式 cleanup，只 stop 后重新就绪
-            VlcJInit.stopPlayback()
+            // 单例：禁止拆实例式 cleanup；离开式停播后重新就绪
+            endPlayback()
             ensurePlayerLifecycleReady()
 
             val loadingSuccess = lifecycleManager.loading().isSuccess
@@ -1762,8 +1768,7 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
                 }
                 if (!isPlayerContentActive(taskId)) return@launch
 
-                // 先作废并异步 stop，立刻拉地址，不串行等待 VLC 停稳
-                controller.invalidatePendingLoads()
+                // 作废排队后立刻拉地址；新 URL 由 loadURL 覆盖，不必 pause/mute
                 stopPlaybackForRefresh()
                 log.info("startPlay: 开始拉地址 ep={}", effectiveEp.name)
                 requestPlayerAndPlay(taskId, dt, effectiveEp)

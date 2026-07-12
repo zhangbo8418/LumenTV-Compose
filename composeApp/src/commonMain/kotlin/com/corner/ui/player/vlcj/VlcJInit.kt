@@ -75,7 +75,7 @@ class VlcJInit {
             }
         }
 
-        /** 离开详情 / 换集换源：停播但保留原生实例 */
+        /** 离开详情：stop 停播，保留原生实例 */
         suspend fun stopPlayback() {
             val ctrl = controller ?: return
             withContext(Dispatchers.IO) {

@@ -252,7 +252,8 @@ fun Player(
                 .focusRequester(focusRequester),
             controller
         ) {
-            showControllerBar.value = !showControllerBar.value
+            controller.togglePlayStatus()
+            showControllerBar.value = true
         }
         DanmakuOverlay(
             controller = controller,
