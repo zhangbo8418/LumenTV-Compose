@@ -1206,7 +1206,7 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
         if (vmPlayerType.first() != PlayerType.Innie.id) return
 
         if (unbindHost) {
-            endPlayback()
+            // clear()/onCleared 已同步 endPlayback，这里只解绑，避免二次停播
             VlcJInit.unbindHost(this)
         }
     }

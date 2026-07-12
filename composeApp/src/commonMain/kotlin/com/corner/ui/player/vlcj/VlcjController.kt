@@ -31,6 +31,7 @@ import uk.co.caprica.vlcj.player.base.MediaPlayer
 import uk.co.caprica.vlcj.player.base.MediaPlayerEventAdapter
 import uk.co.caprica.vlcj.player.base.State
 import uk.co.caprica.vlcj.player.embedded.EmbeddedMediaPlayer
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
 import kotlin.time.Duration
@@ -127,7 +128,8 @@ class VlcjController : PlayerController {
     }
 
     /**
-     * 对齐 TV stopPlaybackForRefresh：换集/换线前立刻作废排队；mute 丢进 VLC 队列。
+     * 对齐 TV stopPlaybackForRefresh：换集/换线前立刻作废排队并异步 mute。
+     * mute 不走 player.submit，避免堵死后续 prepare/play。
      */
     fun stopPlaybackForRefresh(): Int {
         val gen = loadGeneration.incrementAndGet()
@@ -135,18 +137,10 @@ class VlcjController : PlayerController {
         clearPlaybackState()
         playerLoading = true
         abortStuckVlcLoad("stopPlaybackForRefresh gen=$gen")
-        if (!audioSuppressed) {
-            audioSuppressed = true
-        }
-        val p = player
-        if (p != null) {
-            p.submit {
-                runCatching {
-                    val audio = p.audio() ?: return@runCatching
-                    muteBeforeSuppress = audio.isMute
-                    if (!audio.isMute) audio.setMute(true)
-                }
-            }
+        audioSuppressed = true
+        _state.update { it.copy(isMuted = true) }
+        scope.launch(Dispatchers.IO) {
+            suppressAudio("stopPlaybackForRefresh")
         }
         return gen
     }
@@ -178,30 +172,37 @@ class VlcjController : PlayerController {
         return norm(a) == norm(b)
     }
 
+    /** 离开页 endPlayback 幂等；起播时清零 */
+    private val playbackEnded = AtomicBoolean(false)
+
     /**
-     * 对齐 TV PlaybackService.suspend：离开详情立刻标记停播，mute/pause/stop 丢进 VLC 队列。
-     * 禁止在 AWT/Composition 线程同步调 libvlc（易与 display 互锁卡死整窗）。
+     * 对齐 TV PlaybackService.suspend：离开详情立刻 mute+pause。
+     *
+     * 根因（日志已证实）：`controls().stop()` 会在 CallbackVideoSurface 场景下卡住——
+     * `stopped` 事件已触发，但 stop() 仍不返回并占着 libvlc native 锁；
+     * 之后 `media().prepare`/`play` 永远走不到「engine.start 完成」。
+     * 放弃等待也不能救：挂起的 stop 线程仍占锁。因此离开页绝不调 stop。
      */
     fun endPlayback() {
+        if (!playbackEnded.compareAndSet(false, true)) {
+            log.debug("endPlayback 幂等跳过")
+            return
+        }
         clearPlaybackState()
         playerLoading = false
         abortStuckVlcLoad("endPlayback")
-        if (!audioSuppressed) {
-            audioSuppressed = true
-        }
+        audioSuppressed = true
         _state.update { it.copy(state = PlayState.PAUSE, isMuted = true) }
-        val p = player ?: return
-        p.submit {
+        scope.launch(Dispatchers.IO) {
             runCatching {
-                val audio = p.audio()
+                val audio = player?.audio()
                 if (audio != null) {
                     muteBeforeSuppress = audio.isMute
                     if (!audio.isMute) audio.setMute(true)
                 }
-                p.controls()?.setPause(true)
-                p.controls()?.stop()
-                log.info("endPlayback native 完成（保留实例）")
-            }.onFailure { log.warn("endPlayback native 失败: {}", it.message) }
+                player?.controls()?.setPause(true)
+                log.info("endPlayback 完成（mute+pause，跳过 stop 避免 libvlc 死锁）")
+            }.onFailure { log.warn("endPlayback mute/pause 失败: {}", it.message) }
         }
     }
 
@@ -699,37 +700,92 @@ class VlcjController : PlayerController {
         startTrafficMonitor()
         _state.update { it.copy(state = PlayState.BUFFERING, bufferProgression = 0f) }
         val options = buildMediaOptions(url, startPositionMs).toTypedArray()
+        playbackEnded.set(false)
+        val nativeDone = AtomicBoolean(false)
         // 交给 VLC native 队列，立刻返回，避免阻塞换集
         playable.submit {
             if (isLoadGenerationStale(generation)) {
                 log.info("丢弃过期 engine.start(native): generation={}", generation)
+                nativeDone.set(true)
                 return@submit
             }
             try {
+                // 离开页可能 mute 过：起播前恢复，避免有画无声
+                restoreAudioIfSuppressed()
                 // 对齐 TV：setMedia/prepare → play（vlcj prepare 即 changeMedia）
                 val prepared = playable.media().prepare(url, *options)
                 if (!prepared) {
                     log.warn("media().prepare 返回 false")
                     synchronized(vlcStateLock) { playerLoading = false }
+                    nativeDone.set(true)
                     return@submit
                 }
                 if (isLoadGenerationStale(generation)) {
                     log.info("engine.start prepare 后已过期，忽略 generation={}", generation)
+                    nativeDone.set(true)
                     return@submit
                 }
                 playable.controls().play()
                 if (isLoadGenerationStale(generation)) {
                     log.info("engine.start play 后已过期，忽略 generation={}", generation)
+                    nativeDone.set(true)
                     return@submit
                 }
                 log.info("engine.start 完成 generation={}", generation)
             } catch (e: Exception) {
                 log.error("engine.start 失败 generation={}", generation, e)
                 synchronized(vlcStateLock) { playerLoading = false }
+            } finally {
+                nativeDone.set(true)
             }
         }
         log.info("engine.start 已提交 native generation={}", generation)
+        // 若此前 stop 已把 native 锁卡死，prepare 会永远不回；超时后重建实例再起播一次
+        scope.launch {
+            delay(4_000L)
+            if (nativeDone.get() || isLoadGenerationStale(generation)) return@launch
+            log.warn("engine.start native 卡住 generation={}，重建 EmbeddedMediaPlayer", generation)
+            recreateEmbeddedPlayer("prepare hung gen=$generation")
+            if (isLoadGenerationStale(generation) || host?.shouldApplyPlayback() != true) return@launch
+            val retryPlayer = player ?: return@launch
+            retryPlayer.submit {
+                if (isLoadGenerationStale(generation)) return@submit
+                runCatching {
+                    restoreAudioIfSuppressed()
+                    if (retryPlayer.media().prepare(url, *options)) {
+                        retryPlayer.controls().play()
+                        log.info("engine.start 重建后完成 generation={}", generation)
+                    }
+                }.onFailure {
+                    log.error("engine.start 重建后仍失败 generation={}", generation, it)
+                    synchronized(vlcStateLock) { playerLoading = false }
+                }
+            }
+        }
         return true
+    }
+
+    /** 丢弃可能被 stop/prepare 卡死的实例，新建 EmbeddedMediaPlayer（旧实例后台尝试 release） */
+    private fun recreateEmbeddedPlayer(reason: String) {
+        val old = player
+        log.warn("重建点播播放器: {}", reason)
+        runCatching { old?.events()?.removeMediaPlayerEventListener(stateListener) }
+        runCatching {
+            if (!::factory.isInitialized || factory == null) {
+                factory = MediaPlayerFactory(vlcjArgs)
+            }
+            player = factory.mediaPlayers()?.newEmbeddedMediaPlayer()?.apply {
+                events().addMediaPlayerEventListener(stateListener)
+                video().setScale(0.0f)
+            }
+            player?.let { onPlayerRecreated?.invoke(it) }
+        }.onFailure { log.error("重建播放器失败", it) }
+        if (old != null) {
+            Thread({
+                runCatching { old.release() }
+                    .onFailure { log.warn("旧播放器 release 失败: {}", it.message) }
+            }, "vlc-orphan-release").apply { isDaemon = true; start() }
+        }
     }
 
     /** 对齐 TV setMediaItem(position)：续播/片头起点 */
@@ -791,20 +847,23 @@ class VlcjController : PlayerController {
 
     override fun stop() = catch {
         showTips("停止")
-        player?.controls()?.stop()
+        // 与 endPlayback 相同：不调 libvlc stop，避免 CallbackVideoSurface 下卡死
+        runCatching {
+            player?.audio()?.setMute(true)
+            player?.controls()?.setPause(true)
+        }
+        _state.update { it.copy(state = PlayState.PAUSE) }
     }
 
     override suspend fun stopAsync() {
         withContext(Dispatchers.IO) {
-            log.debug("异步停止播放...")
+            log.debug("异步停止播放（mute+pause，跳过 libvlc stop）...")
             showTips("停止")
-            try {
-                withTimeout(2_000) {
-                    player?.controls()?.stop()
-                }
-            } catch (e: Exception) {
-                log.warn("停止播放失败或超时: {}", e.message)
-            }
+            runCatching {
+                player?.audio()?.setMute(true)
+                player?.controls()?.setPause(true)
+            }.onFailure { log.warn("异步停止失败: {}", it.message) }
+            _state.update { it.copy(state = PlayState.PAUSE) }
         }
         frame?.clearVideoFrame()
     }
