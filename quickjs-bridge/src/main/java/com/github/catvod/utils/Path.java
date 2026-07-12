@@ -64,6 +64,11 @@ public class Path {
         return mkdir(new File(root(), "TV"));
     }
 
+    /** 网盘/UC 等缓存：Path.tv("uc") → data/TV/uc */
+    public static File tv(String name) {
+        return new File(tv(), name);
+    }
+
     public static File so() {
         return mkdir(new File(files(), "so"));
     }
