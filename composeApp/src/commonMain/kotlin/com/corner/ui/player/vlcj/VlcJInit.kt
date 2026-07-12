@@ -72,11 +72,19 @@ class VlcJInit {
             }
         }
 
-        /** 离开详情：非阻塞停播，保留原生实例 */
+        /**
+         * 同步 mute+pause 立刻消音，再异步 stop。
+         * 供 clear/onCleared 在可取消协程外调用，避免返回后后台仍出声。
+         */
+        fun stopPlaybackSync() {
+            val ctrl = controller ?: return
+            runCatching { ctrl.endPlaybackSync() }
+        }
+
+        /** 离开详情：对齐 TV suspend，非阻塞停播，保留原生实例 */
         suspend fun stopPlayback() {
             val ctrl = controller ?: return
-            // 不再 lm.stop()→pause：避免与异步 stop 叠加重入卡死
-            runCatching { ctrl.stopForRefreshAndAwait() }
+            runCatching { ctrl.endPlayback() }
         }
 
         suspend fun play(url: String) {

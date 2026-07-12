@@ -1,8 +1,5 @@
 package com.corner.ui.player.vlcj
 
-import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asComposeImageBitmap
 import com.corner.ui.player.BitmapPool
@@ -18,6 +15,7 @@ import uk.co.caprica.vlcj.player.embedded.videosurface.callback.BufferFormatCall
 import uk.co.caprica.vlcj.player.embedded.videosurface.callback.RenderCallback
 import uk.co.caprica.vlcj.player.embedded.videosurface.callback.format.RV32BufferFormat
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
 
 /**
@@ -40,8 +38,10 @@ class VlcjFrameRenderer(
     private var byteArray: ByteArray? = null
     private var info: ImageInfo? = null
     
-    // Compose UI 状态
-    val imageBitmapState: MutableState<ImageBitmap?> = mutableStateOf(null)
+    // 最新帧：只放 AtomicReference，由 Compose withFrameNanos 拉取后再写入 MutableState
+    private val latestFrame = AtomicReference<ImageBitmap?>(null)
+
+    fun peekVideoFrame(): ImageBitmap? = latestFrame.get()
     
     // 当前和待释放的 Bitmap
     private var currentBitmap: Bitmap? = null
@@ -203,14 +203,9 @@ class VlcjFrameRenderer(
         renderEnabled = true
     }
 
-    /**
-     * VLC display 回调在非 Compose 线程写 MutableState，必须包进可变快照，
-     * 否则离开页 NavHost 动画读帧时会抛 snapshot 未 apply 异常。
-     */
+    /** 仅更新 AtomicReference；禁止在此写 Compose MutableState（会卡死 UI） */
     private fun publishFrame(bitmap: ImageBitmap?) {
-        Snapshot.withMutableSnapshot {
-            imageBitmapState.value = bitmap
-        }
+        latestFrame.set(bitmap)
     }
 
     /** 清空画面，不销毁 Bitmap，避免 Skiko SIGSEGV */

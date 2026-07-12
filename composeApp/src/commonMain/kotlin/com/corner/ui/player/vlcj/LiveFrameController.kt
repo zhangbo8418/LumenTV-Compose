@@ -19,7 +19,7 @@ class LiveFrameController(
     private val log = thisLogger()
     private val frameRenderer = VlcjFrameRenderer(bitmapPool)
 
-    override val imageBitmapState = frameRenderer.imageBitmapState
+    override fun peekVideoFrame() = frameRenderer.peekVideoFrame()
 
     @Volatile
     private var released = false

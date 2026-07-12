@@ -393,7 +393,6 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
                 // 换线拉地址挂到 playJob，便于换集时 cancel 打断
                 playJob = coroutineContext[Job]
                 val taskId = cancelPlayerContentRequest(keepJob = coroutineContext[Job])
-                controller.invalidatePendingLoads()
                 // 仅在 stop 期间抑制 VLC finished 误换线；拉地址阶段要允许空结果继续换线
                 stopPlaybackForRefresh()
                 suppressAutoLineSwitch = false
@@ -419,14 +418,14 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
     }
 
     /**
-     * 换集/换源前：作废排队，不 pause/mute；随后 loadURL 播新地址。
+     * 对齐 TV stopPlaybackForRefresh：换集/换线前断音并作废排队，随后 engine.start。
      */
     private suspend fun stopPlaybackForRefresh() {
         PlaybackMediaState.playing = false
-        controller.prepareForUrlSwitch()
+        controller.stopPlaybackForRefresh()
     }
 
-    /** 离开详情：真正 stop 停播，保留单例 */
+    /** 对齐 TV PlaybackService.suspend：离开详情停播，保留单例 */
     private suspend fun endPlayback() {
         PlaybackMediaState.playing = false
         VlcJInit.stopPlayback()
@@ -447,10 +446,12 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
     }
 
     /**
-     * 对齐 TV refresh() → requestPlayer()：异步拉地址并播放。
+     * 对齐 TV refresh()：save → stopPlaybackForRefresh → requestPlayer。
      */
     private fun refreshPlayback(detail: Vod, ep: Episode) {
         saveCurrentHistory()
+        // 同步断音（等价 Exo stop），再异步拉地址起播
+        runCatching { controller.stopPlaybackForRefreshSync() }
         requestPlayer(detail, ep, recyclePy = false)
     }
 
@@ -495,15 +496,11 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
         clearPlaybackControl()
         log.debug("DetailViewModel onCleared - 开始清理")
         supervisor.cancel()
-        // clear() 已在 DetailScreen onDispose 里 stop+unbind；这里只兜底解绑，避免二次 leaveDetail
-        cleanupScope.launch {
-            try {
-                VlcJInit.unbindHost(this@DetailViewModel)
-            } finally {
-                cleanupJob.cancel()
-            }
-        }
-        log.debug("DetailViewModel onCleared - 已提交 unbind")
+        // 同步消音停播：不可放到 cleanupScope（下面会 cancel，日志里因此出现 JobCancellationException）
+        runCatching { VlcJInit.stopPlaybackSync() }
+        runCatching { VlcJInit.unbindHost(this@DetailViewModel) }
+        cleanupJob.cancel()
+        log.debug("DetailViewModel onCleared - 已 stop/unbind")
     }
 
     // ==================== 页面加载流程 ====================
@@ -1173,10 +1170,13 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
         onComplete: () -> Unit = {},
     ) {
         log.debug("----------开始清理详情页资源----------")
+        // 离开详情才立刻消音；页内快搜 unbindHost=false 需保持播放
+        if (unbindHost) {
+            runCatching { VlcJInit.stopPlaybackSync() }
+        }
 
         cleanupScope.launch(Dispatchers.IO) {
             try {
-                // 离开页必须快返回：停播已改为非阻塞，这里不再等 5s / 弹「清理缓慢」转圈
                 withTimeoutOrNull(1_500L) {
                     performCleanup(unbindHost)
                 } ?: log.warn("详情页资源清理超时，强制继续")
@@ -1185,11 +1185,15 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
                 withContext(Dispatchers.Swing) {
                     onComplete()
                 }
+            } catch (_: CancellationException) {
+                log.debug("详情页清理被取消（停播已同步发起）")
             } catch (e: Exception) {
                 log.error("----------清理过程中出错----------", e)
             } finally {
-                withContext(Dispatchers.Swing) {
-                    hideProgress()
+                runCatching {
+                    withContext(Dispatchers.Swing) {
+                        hideProgress()
+                    }
                 }
                 _state.update { it.copy(isLoading = false, isBuffering = false) }
             }
@@ -1201,8 +1205,8 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
 
         if (vmPlayerType.first() != PlayerType.Innie.id) return
 
-        endPlayback()
         if (unbindHost) {
+            endPlayback()
             VlcJInit.unbindHost(this)
         }
     }
@@ -1761,7 +1765,7 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
                 }
                 if (!isPlayerContentActive(taskId)) return@launch
 
-                // 作废排队后立刻拉地址；新 URL 由 loadURL 覆盖，不必 pause/mute
+                // 对齐 TV refresh：先 stopPlaybackForRefresh，再拉地址；engine.start 覆盖新媒体
                 stopPlaybackForRefresh()
                 log.info("startPlay: 开始拉地址 ep={}", effectiveEp.name)
                 requestPlayerAndPlay(taskId, dt, effectiveEp)
@@ -2149,7 +2153,6 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
             controller.doWithHistory { it.copy(vodFlag = detail.currentFlag.flag) }
 
             saveCurrentHistory()
-            controller.invalidatePendingLoads()
             stopPlaybackForRefresh()
 
             if (!isPlayerContentActive(taskId)) {

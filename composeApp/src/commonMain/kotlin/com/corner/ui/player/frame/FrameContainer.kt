@@ -20,6 +20,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
@@ -41,7 +42,18 @@ fun FrameContainer(
     onClick: () -> Unit
 ) {
     val playerState = controller.state.collectAsState()
-    val bitmap by remember { controller.imageBitmapState }
+    // 在帧时钟内拉取 AtomicReference，避免跨线程写 MutableState 触发 snapshot 卡死
+    var bitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(controller) {
+        while (true) {
+            withFrameNanos {
+                val next = controller.peekVideoFrame()
+                if (next !== bitmap) {
+                    bitmap = next
+                }
+            }
+        }
+    }
     val interactionSource = remember { MutableInteractionSource() }
     val isControllerReady by derivedStateOf { // 播放器就绪
         controller.hasPlayer() && !controller.isReleased()

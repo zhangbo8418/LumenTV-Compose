@@ -1,7 +1,6 @@
 package com.corner.ui.player.vlcj
 
 import com.corner.ui.scene.SnackBar
-import androidx.compose.runtime.MutableState
 import androidx.compose.ui.graphics.ImageBitmap
 import com.corner.database.entity.History
 import com.corner.ui.player.BitmapPool
@@ -43,8 +42,8 @@ class VlcjFrameController(
     private val frameRenderer: VlcjFrameRenderer = VlcjFrameRenderer(bitmapPool)
     private var videoSurface: uk.co.caprica.vlcj.player.embedded.videosurface.CallbackVideoSurface? = null
     
-    // 暴露帧渲染器的状态（保持向后兼容）
-    override val imageBitmapState: MutableState<ImageBitmap?> = frameRenderer.imageBitmapState
+    // 视频帧由 AtomicReference 持有，Compose 侧 withFrameNanos 拉取
+    override fun peekVideoFrame(): ImageBitmap? = frameRenderer.peekVideoFrame()
     
     @Volatile
     private var isReleased = false
@@ -97,31 +96,31 @@ class VlcjFrameController(
         frameRenderer.clearFrameSoft()
     }
 
-    /** 换集/换源：停渲染并作废排队（帧状态在主线程清，避免 snapshot 异常） */
-    suspend fun prepareForUrlSwitch() {
+    /** 换集/换源：对齐 TV stopPlaybackForRefresh（帧在主线程清，避免 snapshot 异常） */
+    suspend fun stopPlaybackForRefresh() {
         withContext(Dispatchers.Swing) {
             frameRenderer.pauseRendering()
             frameRenderer.clearFrameSoft()
             detachVideoSurface()
         }
-        controller.invalidatePendingLoads()
+        controller.stopPlaybackForRefresh()
     }
 
-    /** 离开详情：主线程清帧，立刻 pause，后台异步 stop */
-    suspend fun stopForRefreshAndAwait() {
+    /** 离开详情：对齐 TV Service.suspend，主线程清帧 + mute/pause + 异步 stop */
+    suspend fun endPlayback() {
         withContext(Dispatchers.Swing) {
             frameRenderer.pauseRendering()
             frameRenderer.clearFrameSoft()
             detachVideoSurface()
         }
-        controller.stopPlaybackKeepingInstance()
+        controller.endPlaybackAndClearFrame()
     }
 
-    fun stopForRefresh() {
+    fun endPlaybackSync() {
         frameRenderer.pauseRendering()
         frameRenderer.clearFrameSoft()
         detachVideoSurface()
-        controller.stopForRefresh()
+        controller.endPlayback()
     }
 
     fun resumeVideoRendering() {
@@ -129,9 +128,11 @@ class VlcjFrameController(
         frameRenderer.resumeRendering()
     }
 
-    fun invalidatePendingLoads(): Int {
-        return controller.invalidatePendingLoads()
+    fun stopPlaybackForRefreshSync(): Int {
+        return controller.stopPlaybackForRefresh()
     }
+
+    fun invalidatePendingLoads(): Int = stopPlaybackForRefreshSync()
 
     fun currentLoadGeneration(): Int = controller.currentLoadGeneration()
 
