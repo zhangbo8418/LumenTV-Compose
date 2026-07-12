@@ -29,7 +29,6 @@ import com.corner.util.net.Utils
 import com.corner.catvodcore.viewmodel.DetailFromPage
 import com.corner.catvodcore.viewmodel.GlobalAppState
 import com.corner.catvodcore.viewmodel.GlobalAppState.hideProgress
-import com.corner.catvodcore.viewmodel.GlobalAppState.showProgress
 import com.corner.service.history.HistoryService
 import com.corner.service.di.ServiceModule
 import com.corner.service.episode.EpisodeManager
@@ -496,15 +495,15 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
         clearPlaybackControl()
         log.debug("DetailViewModel onCleared - 开始清理")
         supervisor.cancel()
+        // clear() 已在 DetailScreen onDispose 里 stop+unbind；这里只兜底解绑，避免二次 leaveDetail
         cleanupScope.launch {
             try {
                 VlcJInit.unbindHost(this@DetailViewModel)
-                VlcJInit.stopPlayback()
             } finally {
                 cleanupJob.cancel()
             }
         }
-        log.debug("DetailViewModel onCleared - 已提交 stop/unbind")
+        log.debug("DetailViewModel onCleared - 已提交 unbind")
     }
 
     // ==================== 页面加载流程 ====================
@@ -1176,16 +1175,9 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
         log.debug("----------开始清理详情页资源----------")
 
         cleanupScope.launch(Dispatchers.IO) {
-            var progressJob: Job? = null
-
             try {
-                progressJob = launch {
-                    delay(2000L)
-                    SnackBar.postMsg("播放器等资源清理异常缓慢，请耐心等待...", type = SnackBar.MessageType.WARNING)
-                    showProgress()
-                }
-
-                withTimeoutOrNull(5_000L) {
+                // 离开页必须快返回：停播已改为非阻塞，这里不再等 5s / 弹「清理缓慢」转圈
+                withTimeoutOrNull(1_500L) {
                     performCleanup(unbindHost)
                 } ?: log.warn("详情页资源清理超时，强制继续")
                 resetStateAndResources()
@@ -1196,8 +1188,9 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
             } catch (e: Exception) {
                 log.error("----------清理过程中出错----------", e)
             } finally {
-                progressJob?.cancel()
-                hideProgress()
+                withContext(Dispatchers.Swing) {
+                    hideProgress()
+                }
                 _state.update { it.copy(isLoading = false, isBuffering = false) }
             }
         }

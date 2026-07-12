@@ -66,7 +66,6 @@ object SpiderTestUtil {
     suspend fun initializeSpiderStatuses() {
         try {
             val dbStatuses = Db.database.getSpiderStatusDao().getAll()
-            // 注意：这里需要转换数据库状态到内存状态
             dbStatuses.collect { statuses ->
                 spiderStatusMap.clear()
                 statuses.forEach { status ->
@@ -75,6 +74,8 @@ object SpiderTestUtil {
                 }
                 _spiderStatusMap.value = spiderStatusMap.toMap()
             }
+        } catch (_: CancellationException) {
+            // 离开 Composition 时 scope 取消，属正常路径
         } catch (e: Exception) {
             log.warn("Failed to load spider statuses from database: ${e.message}")
         }

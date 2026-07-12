@@ -132,44 +132,29 @@ class VlcjController : PlayerController {
     }
 
     /**
-     * 离开详情：真正 stop 结束播放（保留单例实例，不 dispose）。
-     * stop 带短超时，卡住则回退 pause，避免阻塞返回。
+     * 离开详情：立刻 pause 消音，后台异步 stop（不阻塞返回）。
+     * 同步 wait stop 易在 libvlc 卡住，拖出「清理缓慢」转圈与 Compose snapshot 异常。
      */
     fun stopForRefresh() {
         clearPlaybackState()
         playerLoading = false
         abortStuckVlcLoad("stopForRefresh")
         runCatching {
-            player?.controls()?.stop()
+            player?.controls()?.setPause(true)
             _state.update { it.copy(state = PlayState.PAUSE) }
-            log.info("已 stop 播放（保留实例）")
-        }.onFailure {
-            log.warn("stop 失败，回退 pause: {}", it.message)
-            runCatching {
-                player?.controls()?.setPause(true)
-                _state.update { it.copy(state = PlayState.PAUSE) }
-            }
+        }.onFailure { log.warn("leave pause 失败: {}", it.message) }
+        scope.launch(Dispatchers.IO) {
+            runCatching { player?.controls()?.stop() }
+                .onFailure { log.warn("后台 stop 失败: {}", it.message) }
+                .onSuccess { log.info("后台 stop 完成（保留实例）") }
         }
     }
 
-    /** 离开详情的挂起版：带超时的 stop，避免 libvlc 卡死拖住返回 */
     suspend fun stopPlaybackKeepingInstance() {
-        clearPlaybackState()
-        playerLoading = false
-        abortStuckVlcLoad("leaveDetail")
-        try {
-            withTimeout(2_000) {
-                withContext(Dispatchers.IO) {
-                    player?.controls()?.stop()
-                }
-            }
-            log.info("已 stop 播放（保留实例）")
-        } catch (e: Exception) {
-            log.warn("stop 超时/失败，回退 pause: {}", e.message)
-            runCatching { player?.controls()?.setPause(true) }
+        stopForRefresh()
+        withContext(Dispatchers.Swing) {
+            frame?.clearVideoFrame()
         }
-        _state.update { it.copy(state = PlayState.PAUSE) }
-        frame?.clearVideoFrame()
     }
 
     /**

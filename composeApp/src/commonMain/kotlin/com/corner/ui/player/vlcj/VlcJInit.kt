@@ -2,13 +2,10 @@ package com.corner.ui.player.vlcj
 
 import com.corner.util.settings.SettingStore
 import com.corner.ui.player.PlayerLifecycleManager
-import com.corner.ui.player.PlayerLifecycleState
 import com.corner.ui.player.VodPlaybackHost
 import com.corner.ui.scene.SnackBar
 import com.corner.util.thisLogger
 import com.corner.ui.getPlayerSetting
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import uk.co.caprica.vlcj.factory.discovery.NativeDiscovery
 
 /**
@@ -75,22 +72,11 @@ class VlcJInit {
             }
         }
 
-        /** 离开详情：stop 停播，保留原生实例 */
+        /** 离开详情：非阻塞停播，保留原生实例 */
         suspend fun stopPlayback() {
             val ctrl = controller ?: return
-            withContext(Dispatchers.IO) {
-                runCatching { ctrl.stopForRefreshAndAwait() }
-                val lm = lifecycleManager
-                if (lm != null) {
-                    val state = lm.lifecycleState.value
-                    if (state == PlayerLifecycleState.Playing ||
-                        state == PlayerLifecycleState.Loading ||
-                        state == PlayerLifecycleState.Ready
-                    ) {
-                        runCatching { lm.stop() }
-                    }
-                }
-            }
+            // 不再 lm.stop()→pause：避免与异步 stop 叠加重入卡死
+            runCatching { ctrl.stopForRefreshAndAwait() }
         }
 
         suspend fun play(url: String) {

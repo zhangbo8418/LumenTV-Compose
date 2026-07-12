@@ -12,11 +12,14 @@ import com.corner.ui.player.frame.FramePlayerController
 import com.corner.ui.player.frame.FrameRenderer
 import com.corner.util.play.BrowserUtils.scope
 import com.corner.util.thisLogger
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.swing.Swing
+import kotlinx.coroutines.withContext
 import uk.co.caprica.vlcj.player.base.MediaPlayer
 import kotlin.math.max
 
@@ -94,19 +97,23 @@ class VlcjFrameController(
         frameRenderer.clearFrameSoft()
     }
 
-    /** 换集/换源：停渲染并作废排队，不 pause（随后 loadURL 直接播新地址） */
+    /** 换集/换源：停渲染并作废排队（帧状态在主线程清，避免 snapshot 异常） */
     suspend fun prepareForUrlSwitch() {
-        frameRenderer.pauseRendering()
-        frameRenderer.clearFrameSoft()
-        detachVideoSurface()
+        withContext(Dispatchers.Swing) {
+            frameRenderer.pauseRendering()
+            frameRenderer.clearFrameSoft()
+            detachVideoSurface()
+        }
         controller.invalidatePendingLoads()
     }
 
-    /** 离开详情：停渲染并 stop 结束播放，保留单例 */
+    /** 离开详情：主线程清帧，立刻 pause，后台异步 stop */
     suspend fun stopForRefreshAndAwait() {
-        frameRenderer.pauseRendering()
-        frameRenderer.clearFrameSoft()
-        detachVideoSurface()
+        withContext(Dispatchers.Swing) {
+            frameRenderer.pauseRendering()
+            frameRenderer.clearFrameSoft()
+            detachVideoSurface()
+        }
         controller.stopPlaybackKeepingInstance()
     }
 

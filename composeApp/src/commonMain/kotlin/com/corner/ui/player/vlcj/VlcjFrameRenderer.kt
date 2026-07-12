@@ -2,6 +2,7 @@ package com.corner.ui.player.vlcj
 
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asComposeImageBitmap
 import com.corner.ui.player.BitmapPool
@@ -160,12 +161,12 @@ class VlcjFrameRenderer(
                             }
                             currentBitmap = bmp
                             if (!bmp.isClosed) {
-                                imageBitmapState.value = bmp.asComposeImageBitmap()
+                                publishFrame(bmp.asComposeImageBitmap())
                             }
                         }
                     } catch (e: Exception) {
                         log.error("渲染帧时发生错误", e)
-                        imageBitmapState.value = null
+                        publishFrame(null)
                         synchronized(bitmapSwapLock) {
                             currentBitmap = null
                         }
@@ -202,9 +203,19 @@ class VlcjFrameRenderer(
         renderEnabled = true
     }
 
+    /**
+     * VLC display 回调在非 Compose 线程写 MutableState，必须包进可变快照，
+     * 否则离开页 NavHost 动画读帧时会抛 snapshot 未 apply 异常。
+     */
+    private fun publishFrame(bitmap: ImageBitmap?) {
+        Snapshot.withMutableSnapshot {
+            imageBitmapState.value = bitmap
+        }
+    }
+
     /** 清空画面，不销毁 Bitmap，避免 Skiko SIGSEGV */
     fun clearFrameSoft() {
-        imageBitmapState.value = null
+        publishFrame(null)
     }
 
     /**
@@ -212,7 +223,7 @@ class VlcjFrameRenderer(
      */
     fun cleanup() {
         renderEnabled = false
-        imageBitmapState.value = null
+        publishFrame(null)
         synchronized(bitmapSwapLock) {
             currentBitmap?.let { inFlightBitmaps.addLast(it) }
             currentBitmap = null
@@ -239,7 +250,7 @@ class VlcjFrameRenderer(
         
         renderEnabled = false
         isReleased = true
-        imageBitmapState.value = null
+        publishFrame(null)
         try {
             log.debug("=====开始释放帧渲染器资源=====")
             synchronized(bitmapSwapLock) {
