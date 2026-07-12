@@ -240,13 +240,14 @@ object JarSpiderHostClient {
             return preferred.absolutePath
         }
 
-        log.warn(
-            "JarSpiderHost 未找到捆绑 java，将使用 PATH 的 java（易命中 Java 8）。java.home={} java.version={} tried={}",
-            System.getProperty("java.home"),
-            System.getProperty("java.version"),
-            candidates.map { it.path },
+        // jpackage 精简 runtime 常不带 java.exe，切勿回落 PATH（Windows 易命中 Java 8 → class 61 秒退）
+        val home = System.getProperty("java.home")
+        val binDir = home?.let { File(it, "bin") }
+        val binListing = binDir?.takeIf { it.isDirectory }?.list()?.sorted()?.take(40)?.joinToString().orEmpty()
+        throw IllegalStateException(
+            "捆绑 runtime 未包含 java 启动器（java.home=$home, version=${System.getProperty("java.version")}, bin=[$binListing]）。" +
+                "请重新打包（构建会把 JDK 的 java.exe 拷入 runtime/bin），或开发态用 gradle run。"
         )
-        return "java"
     }
 
     private fun resolveClasspath(): String {

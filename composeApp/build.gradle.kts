@@ -1,4 +1,6 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import org.gradle.api.Project
+import java.io.File
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -238,6 +240,67 @@ compose.desktop {
 
         }
 
+    }
+}
+
+/**
+ * jpackage 精简 runtime 往往不带 java/java.exe，Jar sidecar 无法再起子进程。
+ * 在生成 app image / 安装包前，把构建 JDK 的启动器拷进所有 runtime/bin。
+ */
+fun Project.copyJvmLauncherIntoComposeRuntimes() {
+    val javaHome = file(System.getProperty("java.home") ?: return)
+    val srcBin = file("$javaHome/bin")
+    val launchers = listOf("java", "java.exe", "javaw", "javaw.exe")
+        .map { file("$srcBin/$it") }
+        .filter { it.isFile }
+    if (launchers.isEmpty()) {
+        logger.warn("ensureRuntimeJavaLauncher: 构建 JDK 无 java 启动器: {}", srcBin)
+        return
+    }
+    val binariesRoot = layout.buildDirectory.dir("compose/binaries").get().asFile
+    if (!binariesRoot.isDirectory) return
+    var copied = 0
+    binariesRoot.walkTopDown()
+        .filter { dir ->
+            dir.isDirectory &&
+                dir.name == "bin" &&
+                dir.path.contains("${File.separator}runtime${File.separator}")
+        }
+        .forEach { runtimeBin ->
+            // 已有可用 java 则跳过该目录
+            val hasJava = File(runtimeBin, "java").isFile || File(runtimeBin, "java.exe").isFile
+            if (hasJava) return@forEach
+            launchers.forEach { src ->
+                val dest = file("${runtimeBin.path}/${src.name}")
+                src.copyTo(dest, overwrite = true)
+                dest.setExecutable(true, false)
+                logger.lifecycle("ensureRuntimeJavaLauncher: {} -> {}", src.name, dest)
+                copied++
+            }
+        }
+    if (copied == 0) {
+        logger.info("ensureRuntimeJavaLauncher: runtime/bin 已具备启动器或尚未生成 app image")
+    }
+}
+
+afterEvaluate {
+    tasks.matching { task ->
+        val n = task.name
+        (n.startsWith("create") && n.contains("Distributable", ignoreCase = true)) ||
+            (n.startsWith("package") && (
+                n.contains("Msi", ignoreCase = true) ||
+                    n.contains("Dmg", ignoreCase = true) ||
+                    n.contains("Deb", ignoreCase = true) ||
+                    n.contains("Exe", ignoreCase = true) ||
+                    n.contains("Uber", ignoreCase = true)
+                ))
+    }.configureEach {
+        // package* 在打安装包前再拷一次，避免只跑 package 时 image 里仍缺 java.exe
+        if (name.startsWith("package")) {
+            doFirst { copyJvmLauncherIntoComposeRuntimes() }
+        } else {
+            doLast { copyJvmLauncherIntoComposeRuntimes() }
+        }
     }
 }
 
