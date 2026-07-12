@@ -190,21 +190,29 @@ fun WindowScope.LiveScene(
                     Modifier
                         .fillMaxSize()
                         .pointerInput(overlay) {
-                            detectTapGestures { offset ->
-                                val w = size.width.toFloat().coerceAtLeast(1f)
-                                when {
-                                    overlay != LiveOverlay.None -> overlay = LiveOverlay.None
-                                    offset.x < w * 0.28f -> {
-                                        overlay = LiveOverlay.ChannelMenu
-                                        showInfo = true
+                            detectTapGestures(
+                                onDoubleTap = {
+                                    // 手势层盖在播放器之上，双击需在此切换全屏（含恢复）
+                                    GlobalAppState.toggleVideoFullScreen()
+                                    overlay = LiveOverlay.None
+                                    showInfo = false
+                                },
+                                onTap = { offset ->
+                                    val w = size.width.toFloat().coerceAtLeast(1f)
+                                    when {
+                                        overlay != LiveOverlay.None -> overlay = LiveOverlay.None
+                                        offset.x < w * 0.28f -> {
+                                            overlay = LiveOverlay.ChannelMenu
+                                            showInfo = true
+                                        }
+                                        offset.x > w * 0.72f -> {
+                                            overlay = LiveOverlay.ControlPanel
+                                            showInfo = true
+                                        }
+                                        else -> showInfo = !showInfo
                                     }
-                                    offset.x > w * 0.72f -> {
-                                        overlay = LiveOverlay.ControlPanel
-                                        showInfo = true
-                                    }
-                                    else -> showInfo = !showInfo
-                                }
-                            }
+                                },
+                            )
                         }
                 )
             }

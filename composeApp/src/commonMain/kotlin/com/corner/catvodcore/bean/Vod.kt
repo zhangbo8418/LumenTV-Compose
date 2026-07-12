@@ -4,6 +4,7 @@ import com.corner.util.net.Utils
 import com.corner.database.entity.History
 import com.corner.ui.scene.SnackBar
 import com.corner.util.core.Constants
+import com.corner.util.json.ToStringSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
@@ -14,12 +15,17 @@ private val log = LoggerFactory.getLogger("Vod")
 
 @Serializable
 data class Vod(
-    @SerialName("vod_id") var vodId: String = "",
+    // Py/部分源常返回数字 id/year；统一收成字符串，避免搜索反序列化失败后静默无结果
+    @SerialName("vod_id")
+    @Serializable(ToStringSerializer::class)
+    var vodId: String = "",
     @SerialName("vod_name") var vodName: String? = null,
     @SerialName("type_name") var typeName: String? = null,
     @SerialName("vod_pic") var vodPic: String? = null,
     @SerialName("vod_remarks") var vodRemarks: String? = null,
-    @SerialName("vod_year") var vodYear: String? = null,
+    @SerialName("vod_year")
+    @Serializable(ToStringSerializer::class)
+    var vodYear: String? = null,
     @SerialName("vod_area") var vodArea: String? = null,
     @SerialName("vod_director") var vodDirector: String? = null,
     @SerialName("vod_actor") var vodActor: String? = null,
@@ -29,9 +35,15 @@ data class Vod(
     @SerialName("vod_tag") var vodTag: String? = null,
     @SerialName("cate") var cate: String? = null,
     @SerialName("style") var style: String? = null,
-    @SerialName("land") var land: String? = null,
-    @SerialName("circle") var circle: String? = null,
-    @SerialName("ratio") var ratio: String? = null,
+    @SerialName("land")
+    @Serializable(ToStringSerializer::class)
+    var land: String? = null,
+    @SerialName("circle")
+    @Serializable(ToStringSerializer::class)
+    var circle: String? = null,
+    @SerialName("ratio")
+    @Serializable(ToStringSerializer::class)
+    var ratio: String? = null,
     @Transient
     var vodFlags: MutableList<Flag> = mutableListOf(),
     @Transient

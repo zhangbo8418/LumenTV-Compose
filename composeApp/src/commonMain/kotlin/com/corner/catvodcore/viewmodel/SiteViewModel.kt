@@ -311,22 +311,22 @@ object SiteViewModel {
             if (site.type == 3) {
                 val spider: Spider = ApiConfig.getSpider(site)
                 val searchContent = spider.searchContent(keyword, quick)
-                log.debug("search: " + site.name + "," + searchContent)
-                val result = Jsons.decodeFromString<Result>(searchContent)
-                post(site, result, quick)
-            } else {
-                // 非类型 3 的站点，构建搜索请求参数
-                val params = mutableMapOf<String, String>()
-                params["wd"] = keyword
-                params["quick"] = quick.toString()
-                val searchContent = call(site, params, true)
-                log.debug(site.name + "," + searchContent)
-                val result = Jsons.decodeFromString<Result>(searchContent)
-                post(site, fetchPic(site, result), quick)
-            }
-        } catch (e: Exception) {
-            log.error("${site.name} search error", e)
+            log.debug("search: " + site.name + "," + searchContent)
+            val result = Jsons.decodeFromString<Result>(searchContent)
+            post(site, result, quick)
+        } else {
+            // 非类型 3 的站点，构建搜索请求参数
+            val params = mutableMapOf<String, String>()
+            params["wd"] = keyword
+            params["quick"] = quick.toString()
+            val searchContent = call(site, params, true)
+            log.debug(site.name + "," + searchContent)
+            val result = Jsons.decodeFromString<Result>(searchContent)
+            post(site, fetchPic(site, result), quick)
         }
+    } catch (e: Exception) {
+        log.error("{} search error: {}", site.name, e.message, e)
+    }
     }
 
 
