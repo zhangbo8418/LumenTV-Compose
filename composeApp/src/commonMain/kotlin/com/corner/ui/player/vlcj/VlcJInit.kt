@@ -73,7 +73,7 @@ class VlcJInit {
         }
 
         /**
-         * 同步 mute+pause 立刻消音（不调 libvlc stop，避免 native 死锁）。
+         * 同步 pause 立刻停声（不调 libvlc stop，不改 mute）。
          * 供 clear/onCleared 在可取消协程外调用，避免返回后后台仍出声。
          */
         fun stopPlaybackSync() {

@@ -95,41 +95,10 @@ class VlcjController : PlayerController {
         playerRealStartTime = 0
     }
 
-    /** 换集/离开时临时压音；起播后按用户原 mute 状态恢复，避免叠音或返回后仍出声 */
-    @Volatile
-    private var audioSuppressed = false
-    @Volatile
-    private var muteBeforeSuppress = false
-
-    private fun suppressAudio(reason: String) {
-        runCatching {
-            val audio = player?.audio() ?: return
-            if (!audioSuppressed) {
-                muteBeforeSuppress = audio.isMute
-                audioSuppressed = true
-            }
-            if (!audio.isMute) {
-                audio.setMute(true)
-            }
-            _state.update { it.copy(isMuted = true) }
-            log.info("已抑制音频: {}", reason)
-        }.onFailure { log.warn("抑制音频失败: {}", it.message) }
-    }
-
-    private fun restoreAudioIfSuppressed() {
-        if (!audioSuppressed) return
-        audioSuppressed = false
-        runCatching {
-            val audio = player?.audio() ?: return
-            audio.setMute(muteBeforeSuppress)
-            _state.update { it.copy(isMuted = muteBeforeSuppress) }
-            log.info("已恢复音频 mute={}", muteBeforeSuppress)
-        }.onFailure { log.warn("恢复音频失败: {}", it.message) }
-    }
-
     /**
-     * 对齐 TV stopPlaybackForRefresh：换集/换线前立刻作废排队并异步 mute。
-     * mute 不走 player.submit，避免堵死后续 prepare/play。
+     * 对齐 TV stopPlaybackForRefresh：换集/换线前作废排队并 pause。
+     * 不 mute：pause 已无声；mute 只会把用户静音状态弄乱，起播后像「被静音」。
+     * 也不调 libvlc stop：CallbackVideoSurface 下易卡死 native 锁。
      */
     fun stopPlaybackForRefresh(): Int {
         val gen = loadGeneration.incrementAndGet()
@@ -137,10 +106,10 @@ class VlcjController : PlayerController {
         clearPlaybackState()
         playerLoading = true
         abortStuckVlcLoad("stopPlaybackForRefresh gen=$gen")
-        audioSuppressed = true
-        _state.update { it.copy(isMuted = true) }
+        _state.update { it.copy(state = PlayState.PAUSE) }
         scope.launch(Dispatchers.IO) {
-            suppressAudio("stopPlaybackForRefresh")
+            runCatching { player?.controls()?.setPause(true) }
+                .onFailure { log.warn("stopPlaybackForRefresh pause 失败: {}", it.message) }
         }
         return gen
     }
@@ -176,12 +145,11 @@ class VlcjController : PlayerController {
     private val playbackEnded = AtomicBoolean(false)
 
     /**
-     * 对齐 TV PlaybackService.suspend：离开详情立刻 mute+pause。
+     * 对齐 TV PlaybackService.suspend：离开详情立刻 pause。
      *
-     * 根因（日志已证实）：`controls().stop()` 会在 CallbackVideoSurface 场景下卡住——
-     * `stopped` 事件已触发，但 stop() 仍不返回并占着 libvlc native 锁；
-     * 之后 `media().prepare`/`play` 永远走不到「engine.start 完成」。
-     * 放弃等待也不能救：挂起的 stop 线程仍占锁。因此离开页绝不调 stop。
+     * 不调 controls().stop()：CallbackVideoSurface 下 stop 常在 stopped 后仍不返回并占住
+     * libvlc native 锁，导致后续 prepare/play 永远卡住。
+     * 也不 mute：pause 已无声；静音状态应留给用户手动控制。
      */
     fun endPlayback() {
         if (!playbackEnded.compareAndSet(false, true)) {
@@ -191,18 +159,12 @@ class VlcjController : PlayerController {
         clearPlaybackState()
         playerLoading = false
         abortStuckVlcLoad("endPlayback")
-        audioSuppressed = true
-        _state.update { it.copy(state = PlayState.PAUSE, isMuted = true) }
+        _state.update { it.copy(state = PlayState.PAUSE) }
         scope.launch(Dispatchers.IO) {
             runCatching {
-                val audio = player?.audio()
-                if (audio != null) {
-                    muteBeforeSuppress = audio.isMute
-                    if (!audio.isMute) audio.setMute(true)
-                }
                 player?.controls()?.setPause(true)
-                log.info("endPlayback 完成（mute+pause，跳过 stop 避免 libvlc 死锁）")
-            }.onFailure { log.warn("endPlayback mute/pause 失败: {}", it.message) }
+                log.info("endPlayback 完成（pause，跳过 stop/mute）")
+            }.onFailure { log.warn("endPlayback pause 失败: {}", it.message) }
         }
     }
 
@@ -331,7 +293,6 @@ class VlcjController : PlayerController {
             loadStartedAtMs = 0L
             // 换集后强制恢复渲染，避免黑屏
             frame?.resumeVideoRendering()
-            restoreAudioIfSuppressed()
             if (playerRealStartTime == 0L) {
                 playerRealStartTime = System.currentTimeMillis()
                 log.info("播放真正开始，设置实际开始时间: $playerRealStartTime")
@@ -710,8 +671,6 @@ class VlcjController : PlayerController {
                 return@submit
             }
             try {
-                // 离开页可能 mute 过：起播前恢复，避免有画无声
-                restoreAudioIfSuppressed()
                 // 对齐 TV：setMedia/prepare → play（vlcj prepare 即 changeMedia）
                 val prepared = playable.media().prepare(url, *options)
                 if (!prepared) {
@@ -751,7 +710,6 @@ class VlcjController : PlayerController {
             retryPlayer.submit {
                 if (isLoadGenerationStale(generation)) return@submit
                 runCatching {
-                    restoreAudioIfSuppressed()
                     if (retryPlayer.media().prepare(url, *options)) {
                         retryPlayer.controls().play()
                         log.info("engine.start 重建后完成 generation={}", generation)
@@ -847,22 +805,17 @@ class VlcjController : PlayerController {
 
     override fun stop() = catch {
         showTips("停止")
-        // 与 endPlayback 相同：不调 libvlc stop，避免 CallbackVideoSurface 下卡死
-        runCatching {
-            player?.audio()?.setMute(true)
-            player?.controls()?.setPause(true)
-        }
+        // 不调 libvlc stop（易卡死）；pause 即可停声，保持用户 mute 状态不动
+        runCatching { player?.controls()?.setPause(true) }
         _state.update { it.copy(state = PlayState.PAUSE) }
     }
 
     override suspend fun stopAsync() {
         withContext(Dispatchers.IO) {
-            log.debug("异步停止播放（mute+pause，跳过 libvlc stop）...")
+            log.debug("异步停止播放（pause，跳过 libvlc stop）...")
             showTips("停止")
-            runCatching {
-                player?.audio()?.setMute(true)
-                player?.controls()?.setPause(true)
-            }.onFailure { log.warn("异步停止失败: {}", it.message) }
+            runCatching { player?.controls()?.setPause(true) }
+                .onFailure { log.warn("异步停止失败: {}", it.message) }
             _state.update { it.copy(state = PlayState.PAUSE) }
         }
         frame?.clearVideoFrame()

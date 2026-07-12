@@ -418,7 +418,7 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
     }
 
     /**
-     * 对齐 TV stopPlaybackForRefresh：换集/换线前断音并作废排队，随后 engine.start。
+     * 对齐 TV stopPlaybackForRefresh：换集/换线前 pause 并作废排队，随后 engine.start。
      */
     private suspend fun stopPlaybackForRefresh() {
         PlaybackMediaState.playing = false
@@ -450,7 +450,7 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
      */
     private fun refreshPlayback(detail: Vod, ep: Episode) {
         saveCurrentHistory()
-        // 同步断音（等价 Exo stop），再异步拉地址起播
+        // 同步 pause（等价停播），再异步拉地址起播
         runCatching { controller.stopPlaybackForRefreshSync() }
         requestPlayer(detail, ep, recyclePy = false)
     }
