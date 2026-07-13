@@ -79,6 +79,7 @@ object JsLoader {
     fun getSpider(key: String, api: String, ext: String, jar: String): Spider {
         return spiders.computeIfAbsent(key) {
             try {
+                QuickJsNative.ensureLoaded()
                 val jsSpider = loader.spider(api, BaseLoader.dex(jar))
                 jsSpider.siteKey = key
                 val adapter = JsSpiderAdapter(jsSpider)

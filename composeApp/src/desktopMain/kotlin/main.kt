@@ -41,6 +41,10 @@ private const val CHANGE_LOG_URL = "https://raw.githubusercontent.com/clevebitr/
 fun main() {
     // 初始化 Log4j2 日志配置
     TVLogConfigurator.configure()
+
+    // JVM QuickJS 需手动加载原生库（否则 JS 源 createContext 失败）
+    runCatching { com.corner.catvodcore.loader.QuickJsNative.ensureLoaded() }
+        .onFailure { log.warn("QuickJS native 预加载失败（JS 源将不可用）: {}", it.message) }
     
     launchErrorCatcher()
     printSystemInfo()
