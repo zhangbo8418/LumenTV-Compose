@@ -1,6 +1,5 @@
 package com.corner.catvodcore.config
 
-import com.corner.catvodcore.viewmodel.SiteViewModel
 import com.corner.util.settings.SettingStore
 import com.corner.util.settings.SettingType
 import com.corner.catvodcore.bean.Rule
@@ -57,17 +56,20 @@ object ApiConfig {
     fun clear() {
         apiFlow.value = Api(spider = "")
         ParseConfig.clear()
+        // 对齐 TV VodConfig.clear：home = null
+        GlobalAppState.home.value = Site.get("", "")
     }
 
     fun applySnapshot(snapshot: Api, home: Site) {
         apiFlow.value = snapshot
         api = snapshot
-        GlobalAppState.home.value = home
+        setHome(home, save = false)
         if (snapshot.spider.isNotBlank()) {
             runCatching { BaseLoader.parseJar(snapshot.spider, false) }
         }
         runCatching { ParseConfig.init(snapshot.parses, snapshot.cfg?.parse) }
         runCatching { WallConfig.init(snapshot.wallpaper) }
+        GlobalAppState.refreshHome()
     }
 
     fun parseConfig(
@@ -128,15 +130,10 @@ object ApiConfig {
             BaseLoader.parseJar(apiConfig.spider, true)
             ParseConfig.init(apiConfig.parses, cfg.parse)
 
-            // 先解析站点相对 api/ext，再 setHome，避免首页抢跑拿到 ./js/drpy2.min.js
+            // 对齐 TV initSite：先解析站点，再按 config.home 设首页（save=false）
             api.initSite()
-
-            val homeSite = if (cfg.home?.isNotBlank() == true) {
-                api.sites.find { it.key == cfg.home }
-            } else {
-                api.sites.firstOrNull { !it.isHide() } ?: api.sites.firstOrNull()
-            }
-            setHome(homeSite)
+            val homeSite = resolveHomeSite(cfg.home)
+            setHome(homeSite, save = false)
 
             scope.launch {
                 api.sites = Db.Site.update(cfg, api)
@@ -149,6 +146,8 @@ object ApiConfig {
             log.info("仓库头像: {}", resolvedLogo ?: "(无)")
 
             log.info("解析配置结束")
+            // 对齐 TV：load 完成后 ConfigEvent.vod → RefreshEvent.home
+            GlobalAppState.refreshHome()
             onSuccess()
             true
         } catch (e: Exception) {
@@ -157,6 +156,14 @@ object ApiConfig {
             onError(e)
             false
         }
+    }
+
+    /** 对齐 TV：config.home 匹配 key，找不到则 sites[0]（优先非隐藏） */
+    private fun resolveHomeSite(homeKey: String?): Site? {
+        if (api.sites.isEmpty()) return null
+        val visible = api.sites.filter { !it.isHide() }.ifEmpty { api.sites.toList() }
+        if (homeKey.isNullOrBlank()) return visible.firstOrNull()
+        return api.sites.find { it.key == homeKey } ?: visible.firstOrNull()
     }
 
     /** 相对资源按点播基址解析；含 `{` 的模板（如直播 logo）不算仓库头像 */
@@ -176,8 +183,33 @@ object ApiConfig {
         return matches.lastOrNull { !it.contains("{") }
     }
 
+    /**
+     * 对齐 TV 公开 setHome：写 DB key + RefreshEvent.home()
+     */
     fun setHome(home: Site?) {
-        GlobalAppState.home.value = home ?: Site.get("", "")
+        setHome(home, save = true)
+    }
+
+    /**
+     * 对齐 TV private setHome(config, site, save)：
+     * - save=false：解析配置恢复首页，只改内存
+     * - save=true：用户换站，持久化 key 并刷新首页
+     */
+    fun setHome(home: Site?, save: Boolean) {
+        val site = home ?: Site.get("", "")
+        GlobalAppState.home.value = site
+        val cfg = api.cfg
+        if (cfg != null && site.key.isNotBlank()) {
+            api.cfg = cfg.copy(home = site.key)
+            if (save) {
+                scope.launch {
+                    Db.Config.setHome(cfg.url, ConfigType.SITE.ordinal, site.key)
+                }
+            }
+        }
+        if (save) {
+            GlobalAppState.refreshHome()
+        }
     }
 
     fun setParse(parse: Parse) {
@@ -347,10 +379,6 @@ fun Api.initSite() {
             log.warn("初始化站点失败，已跳过: key={} name={} err={}", site.key, site.name, e.message)
         }
     }
-    if (GlobalAppState.home.value.isEmpty() && sites.isNotEmpty()) {
-        GlobalAppState.home.value = sites.firstOrNull { !it.isHide() } ?: sites.first()
-        SiteViewModel.viewModelScope.launch {
-            Db.Config.setHome(url, ConfigType.SITE.ordinal, GlobalAppState.home.value.toString())
-        }
-    }
+    // 首页站点只在 parseConfig 根据 cfg.home 设置一次。
+    // 切勿在此默认切到第一个站：会先触发加载，随后 setHome 正确源时又因 homeLoaded 跳过。
 }

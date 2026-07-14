@@ -383,7 +383,6 @@ fun WindowScope.VideoScene(
             onClose = { showChooseHome = false }
         ) {
             showChooseHome = false
-            vm.clear()
             scope.launch {
                 state.animateScrollToItem(0)
             }
@@ -1101,15 +1100,8 @@ fun ChooseHomeDialog(
                                 OutlinedButton(
                                     modifier = Modifier.weight(3f).padding(end = 8.dp),
                                     onClick = {
-                                        SiteViewModel.viewModelScope.launch {
-                                            ApiConfig.setHome(item)
-                                            model.value.homeLoaded = false
-                                            Db.Config.setHome(
-                                                ApiConfig.api.url,
-                                                ConfigType.SITE.ordinal,
-                                                item.key
-                                            )
-                                        }
+                                        // 对齐 TV HomeActivity.setSite → VodConfig.setHome(item)
+                                        ApiConfig.setHome(item)
                                         onClick(item)
                                     },
                                     shape = RoundedCornerShape(6.dp),

@@ -36,10 +36,16 @@ class VideoViewModel : BaseViewModel() {
 
     val isLoading = mutableStateOf(false)
 
+    private var loadJob: Job? = null
+    private var loadedHomeKey: String? = null
+
     init {
+        // 对齐 TV：HomeActivity 只响应 RefreshEvent.HOME / ConfigEvent.VOD → getVideo()
         scope.launch {
-            home.collect {
-                homeLoad()
+            GlobalAppState.homeRefreshEpoch.collect { epoch ->
+                if (epoch == 0L) return@collect
+                if (home.value.isEmpty()) return@collect
+                homeLoad(forceRefresh = true)
             }
         }
         scope.launch {
@@ -58,6 +64,9 @@ class VideoViewModel : BaseViewModel() {
     }
 
     fun clear() {
+        loadJob?.cancel()
+        loadedHomeKey = null
+        isLoading.value = false
         _state.update {
             it.copy(
                 homeVodResult = mutableSetOf(),
@@ -68,85 +77,96 @@ class VideoViewModel : BaseViewModel() {
         }
     }
 
-    private var loadJob: Job? = null
+    /** 对齐 TV getVideo()：取消旧请求后按当前 VodConfig.getHome() 拉首页 */
     fun homeLoad(forceRefresh: Boolean = false) {
-        //取消前一个任务
         loadJob?.cancel()
-        if (isLoading.value) return
+
+        val targetKey = home.value.key
+        if (targetKey.isBlank()) {
+            log.debug("主页配置为空")
+            return
+        }
 
         isLoading.value = true
-        log.debug("开始加载主页数据")
+        log.debug("开始加载主页数据 key={} force={}", targetKey, forceRefresh)
 
-        SiteViewModel.viewModelScope.launch {
+        loadJob = SiteViewModel.viewModelScope.launch {
             try {
                 showProgress()
-
-                // 强制刷新时重置状态
                 if (forceRefresh) {
-                    _state.value.homeLoaded = false
+                    _state.update {
+                        it.copy(
+                            homeLoaded = false,
+                            homeVodResult = mutableSetOf(),
+                            classList = mutableSetOf(),
+                            currentClass = null,
+                            currentFilters = listOf(),
+                            dirPaths = mutableListOf(),
+                            page = AtomicInteger(1),
+                        )
+                    }
+                    loadedHomeKey = null
                 }
 
-                if (!_state.value.homeLoaded) {
-                    val home = home.value
-                    if (home.isEmpty()) {
-                        log.debug("主页配置为空")
-                        isLoading.value = false
+                val currentHome = home.value
+                if (currentHome.isEmpty() || currentHome.key != targetKey) {
+                    log.debug("主页已切换，取消本次加载 expected={} actual={}", targetKey, currentHome.key)
+                    return@launch
+                }
+
+                val homeContent = SiteViewModel.homeContent()
+                if (home.value.key != targetKey) {
+                    log.debug("主页加载完成前已换站，丢弃结果")
+                    return@launch
+                }
+
+                var list = homeContent.list.toMutableSet()
+                var classList = SiteViewModel.result.value.types.toMutableSet()
+
+                if (currentHome.categories.isNotEmpty()) {
+                    classList.removeAll { !currentHome.categories.contains(it.typeName) }
+                }
+
+                if (list.isEmpty()) {
+                    if (classList.isEmpty()) {
+                        log.debug("没有可用的分类")
+                        SnackBar.postMsg(
+                            "没有可用的分类,请尝试切换站源或重新加载",
+                            type = SnackBar.MessageType.WARNING
+                        )
                         return@launch
                     }
 
-                    // 尝试获取首页内容
-                    val homeContent = SiteViewModel.homeContent()
-                    var list = homeContent.list.toMutableSet()
-                    var classList = SiteViewModel.result.value.types.toMutableSet()
+                    val firstType = classList.first().apply { selected = true }
+                    val result = loadCate(firstType.typeId)
+                    if (home.value.key != targetKey) return@launch
 
-                    // 过滤分类
-                    if (home.categories.isNotEmpty()) {
-                        classList.removeAll { !home.categories.contains(it.typeName) }
+                    if (!result.isSuccess || result.list.isEmpty()) {
+                        log.debug("加载分类内容失败")
+                        SnackBar.postMsg(
+                            "加载分类内容失败,请尝试切换站源或重新加载",
+                            type = SnackBar.MessageType.WARNING
+                        )
+                        return@launch
                     }
 
-                    // 如果首页内容为空，尝试加载第一个分类
-                    if (list.isEmpty()) {
-                        if (classList.isEmpty()) {
-                            log.debug("没有可用的分类")
-                            SnackBar.postMsg(
-                                "没有可用的分类,请尝试切换站源或重新加载",
-                                type = SnackBar.MessageType.WARNING
-                            )
-                            isLoading.value = false
-                            return@launch
-                        }
+                    _state.value.page.addAndGet(1)
+                    list = result.list.toMutableSet()
+                } else {
+                    classList = (mutableSetOf(Type.home()) + classList).toMutableSet()
+                }
 
-                        val firstType = classList.first().apply { selected = true }
-                        val result = loadCate(firstType.typeId)
-
-                        if (!result.isSuccess || result.list.isEmpty()) {
-                            log.debug("加载分类内容失败")
-                            SnackBar.postMsg(
-                                "加载分类内容失败,请尝试切换站源或重新加载",
-                                type = SnackBar.MessageType.WARNING
-                            )
-                            isLoading.value = false
-                            return@launch
-                        }
-
-                        _state.value.page.addAndGet(1)
-                        list = result.list.toMutableSet()
-                    } else {
-                        classList = (mutableSetOf(Type.home()) + classList).toMutableSet()
-                    }
-
-                    // 只有成功获取到数据时才标记为已加载
-                    if (list.isNotEmpty()) {
-                        _state.update {
-                            it.copy(
-                                homeVodResult = list,
-                                currentClass = classList.firstOrNull(),
-                                classList = classList,
-                                filtersMap = SiteViewModel.result.value.filters,
-                                homeLoaded = true,  // 只有这里设为true
-                                currentFilters = getFilters(classList.first())
-                            )
-                        }
+                if (list.isNotEmpty() && home.value.key == targetKey) {
+                    loadedHomeKey = targetKey
+                    _state.update {
+                        it.copy(
+                            homeVodResult = list,
+                            currentClass = classList.firstOrNull(),
+                            classList = classList,
+                            filtersMap = SiteViewModel.result.value.filters,
+                            homeLoaded = true,
+                            currentFilters = getFilters(classList.first())
+                        )
                     }
                 }
             } catch (e: IllegalStateException) {
@@ -156,23 +176,30 @@ class VideoViewModel : BaseViewModel() {
                 ) {
                     hideProgress()
                     isLoading.value = false
-                    _state.value.homeLoaded = false
+                    loadedHomeKey = null
                     _state.update {
                         it.copy(
+                            homeLoaded = false,
                             showBrowserDownloadDialog = true,
-                            browserDownloadReason = home.value.name ?: "当前站源",
+                            browserDownloadReason = home.value.name.ifEmpty { "当前站源" },
                         )
                     }
                     return@launch
                 }
                 log.error("加载失败(IllegalStateException)", e)
-                _state.value.homeLoaded = false
+                loadedHomeKey = null
+                _state.update { it.copy(homeLoaded = false) }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 log.error("加载失败", e)
-                _state.value.homeLoaded = false
+                loadedHomeKey = null
+                _state.update { it.copy(homeLoaded = false) }
             } finally {
-                hideProgress()
-                isLoading.value = false
+                if (home.value.key == targetKey) {
+                    hideProgress()
+                    isLoading.value = false
+                }
             }
         }
     }

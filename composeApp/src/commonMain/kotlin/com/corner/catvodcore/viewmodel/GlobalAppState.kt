@@ -70,6 +70,17 @@ object GlobalAppState {
     val home = MutableStateFlow(Site.get("", ""))
 
     /**
+     * 对齐 TV RefreshEvent.home：递增后触发首页内容重载。
+     * 配置恢复用 setHome(save=false) 只改内存；加载结束后再 refreshHome。
+     * 用户换站走 setHome(save=true) 内直接 refreshHome。
+     */
+    val homeRefreshEpoch = MutableStateFlow(0L)
+
+    fun refreshHome() {
+        homeRefreshEpoch.update { it + 1 }
+    }
+
+    /**
      * 是否清除数据
      */
     val clear = MutableStateFlow(false)
