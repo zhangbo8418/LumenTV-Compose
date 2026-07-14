@@ -98,19 +98,28 @@ try {
     & cmake --build $Build --target quickjs-java-wrapper -j 4
     if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
 
+    # 运行时/workflow 期望不带 lib 前缀；MinGW+Ninja 常产出 libquickjs-java-wrapper.dll
     $LibName = "quickjs-java-wrapper.dll"
     $Built = $null
     foreach ($cand in @(
             (Join-Path $Build $LibName),
             (Join-Path $Build "lib/$LibName"),
-            (Join-Path $Build "Release/$LibName")
+            (Join-Path $Build "Release/$LibName"),
+            (Join-Path $Build "lib$LibName"),
+            (Join-Path $Build "lib/lib$LibName"),
+            (Join-Path $Build "Release/lib$LibName")
         )) {
         if (Test-Path $cand) { $Built = $cand; break }
     }
     if (-not $Built) {
-        Get-ChildItem -Recurse $Build -Filter "*.dll" | ForEach-Object { Write-Host $_.FullName }
-        throw "Built DLL not found: $LibName"
+        $Built = Get-ChildItem -Recurse $Build -Filter "*quickjs-java-wrapper.dll" -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
     }
+    if (-not $Built) {
+        Get-ChildItem -Recurse $Build -Filter "*.dll" | ForEach-Object { Write-Host $_.FullName }
+        throw "Built DLL not found: $LibName (also tried lib$LibName)"
+    }
+    Write-Host "==> Found built DLL: $Built"
 
     # --- Win7 dependency gate ---
     Write-Host "==> Scanning DLL dependents (Win7 gate)"
