@@ -67,7 +67,7 @@ class LiveFrameController(
                 controller.player?.controls()?.stop()
                 controller.player?.videoSurface()?.set(null)
                 Thread.sleep(100)
-                controller.player?.release()
+                controller.dispose()
                 controller.player = null
             } catch (e: Throwable) {
                 log.error("释放直播播放器失败", e)

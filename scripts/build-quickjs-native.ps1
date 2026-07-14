@@ -72,7 +72,7 @@ try {
     $StaticRt = "-static-libgcc -static-libstdc++"
     $CFlags = "$Win7Defs $JniInc $StaticRt"
     $CxxFlags = "$Win7Defs $JniInc $StaticRt"
-    $LdFlags = "-static-libgcc -static-libstdc++ -Wl,--subsystem,windows:6.01"
+    $LdFlags = "-static-libgcc -static-libstdc++ -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic -Wl,--subsystem,windows:6.01"
 
     $Generator = "MinGW Makefiles"
     if (Get-Command ninja -ErrorAction SilentlyContinue) {

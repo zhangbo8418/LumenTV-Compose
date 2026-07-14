@@ -23,10 +23,21 @@ object QuickJsNative {
             if (loaded.get()) return
             val libFile = resolveLibraryFile()
                 ?: error(
-                    "未找到 QuickJS 原生库（${libraryFileName()}）。" +
-                        "请将 ${libraryFileName()} 放到 appResources/${SysVerUtil.getAppResourcesPlatform()}/lib/"
+                    "未找到 QuickJS 原生库（${libraryFileNames().joinToString(" / ")}）。" +
+                        "请将 DLL 放到 appResources/${SysVerUtil.getAppResourcesPlatform()}/lib/"
                 )
-            System.load(libFile.absolutePath)
+            val loadError = runCatching { System.load(libFile.absolutePath) }
+                .exceptionOrNull()
+            if (loadError != null) {
+                val hint = if (SysVerUtil.currentOs == OperatingSystem.Windows &&
+                    loadError.message.orEmpty().contains("dependent libraries", ignoreCase = true)
+                ) {
+                    "（Win7 常见原因：DLL 未静态链接 MinGW 运行时，需用 scripts/build-quickjs-native.ps1 重新编译并随包分发）"
+                } else {
+                    ""
+                }
+                error("加载 QuickJS 原生库失败: ${libFile.absolutePath} — ${loadError.message}$hint")
+            }
             loaded.set(true)
             log.info("QuickJS native loaded: {}", libFile.absolutePath)
             verifyRuntime()
@@ -51,35 +62,35 @@ object QuickJsNative {
         }
     }
 
-    private fun libraryFileName(): String = when (SysVerUtil.currentOs) {
-        OperatingSystem.Windows -> "quickjs-java-wrapper.dll"
-        OperatingSystem.MacOS -> "libquickjs-java-wrapper.dylib"
-        OperatingSystem.Linux -> "libquickjs-java-wrapper.so"
-        OperatingSystem.Unknown -> "libquickjs-java-wrapper.so"
+    private fun libraryFileNames(): List<String> = when (SysVerUtil.currentOs) {
+        OperatingSystem.Windows -> listOf("quickjs-java-wrapper.dll", "libquickjs-java-wrapper.dll")
+        OperatingSystem.MacOS -> listOf("libquickjs-java-wrapper.dylib")
+        OperatingSystem.Linux -> listOf("libquickjs-java-wrapper.so")
+        OperatingSystem.Unknown -> listOf("libquickjs-java-wrapper.so")
     }
 
     private fun resolveLibraryFile(): File? {
-        val name = libraryFileName()
         val platform = SysVerUtil.getAppResourcesPlatform()
         val candidates = mutableListOf<File>()
 
-        System.getProperty(Constants.RES_PATH_KEY)?.takeIf { it.isNotBlank() }?.let { res ->
-            candidates += File(res, "lib/$name")
-            candidates += File(res, name)
-        }
-
-        val userDir = System.getProperty("user.dir") ?: "."
-        candidates += File(userDir, "src/desktopMain/appResources/$platform/lib/$name")
-        candidates += File(userDir, "composeApp/src/desktopMain/appResources/$platform/lib/$name")
-        candidates += File(userDir, "appResources/$platform/lib/$name")
-
-        // java.library.path 兜底
-        System.getProperty("java.library.path")
-            ?.split(File.pathSeparator)
-            ?.filter { it.isNotBlank() }
-            ?.forEach { dir ->
-                candidates += File(dir, name)
+        for (name in libraryFileNames()) {
+            System.getProperty(Constants.RES_PATH_KEY)?.takeIf { it.isNotBlank() }?.let { res ->
+                candidates += File(res, "lib/$name")
+                candidates += File(res, name)
             }
+
+            val userDir = System.getProperty("user.dir") ?: "."
+            candidates += File(userDir, "src/desktopMain/appResources/$platform/lib/$name")
+            candidates += File(userDir, "composeApp/src/desktopMain/appResources/$platform/lib/$name")
+            candidates += File(userDir, "appResources/$platform/lib/$name")
+
+            System.getProperty("java.library.path")
+                ?.split(File.pathSeparator)
+                ?.filter { it.isNotBlank() }
+                ?.forEach { dir ->
+                    candidates += File(dir, name)
+                }
+        }
 
         return candidates.firstOrNull { it.isFile }
     }
