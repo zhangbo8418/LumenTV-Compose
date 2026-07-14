@@ -757,64 +757,37 @@ fun VideoTopBar(
             }
         },
         actions = {
-            // 右侧操作按钮组
+            // 右侧操作按钮：无壁纸黑底时 alpha=0.3 几乎看不见，对齐左侧站点按钮的可读对比度
+            val actionBg = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f)
+            val actionFg = MaterialTheme.colorScheme.onSurface
+            val actionBorder = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
             Row(
                 modifier = Modifier.padding(end = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 直播按钮
-                IconButton(
-                    onClick = { onClickLive() },
-                    modifier = Modifier
-                        .size(36.dp)
-                        .padding(2.dp),
-                    colors = IconButtonDefaults.iconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.LiveTv,
-                        contentDescription = "直播",
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-
-                // 历史记录按钮
-                IconButton(
-                    onClick = { onClickHistory() },
-                    modifier = Modifier
-                        .size(36.dp)  // 适当减小整体尺寸
-                        .padding(2.dp),  // 增加内边距替代背景
-                    colors = IconButtonDefaults.iconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.History,
-                        contentDescription = "历史记录",
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-
-                // 设置按钮
-                IconButton(
-                    onClick = { onClickSetting() },
-                    modifier = Modifier
-                        .size(36.dp)
-                        .padding(2.dp),
-                    colors = IconButtonDefaults.iconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Settings,
-                        contentDescription = "设置",
-                        modifier = Modifier.size(24.dp)
-                    )
+                listOf(
+                    Triple(Icons.Outlined.LiveTv, "直播", onClickLive),
+                    Triple(Icons.Outlined.History, "历史记录", onClickHistory),
+                    Triple(Icons.Outlined.Settings, "设置", onClickSetting),
+                ).forEach { (icon, desc, onClick) ->
+                    IconButton(
+                        onClick = onClick,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .border(1.dp, actionBorder, CircleShape)
+                            .clip(CircleShape),
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = actionBg,
+                            contentColor = actionFg
+                        )
+                    ) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = desc,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
             }
         }

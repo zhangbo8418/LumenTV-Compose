@@ -434,15 +434,15 @@ object PyLoader {
     }
 
     fun getSpider(key: String, api: String, ext: String, jar: String): Spider {
-        return spiders.computeIfAbsent(key) {
-            try {
-                val spider = PySpiderProcess(key, api, ext, jar)
-                spider.siteKey = key
-                spider
-            } catch (e: Throwable) {
-                log.error("load py spider failed: key={} api={} jar={}", key, api, jar, e)
-                Spider()
-            }
+        spiders[key]?.let { return it }
+        return try {
+            val spider = PySpiderProcess(key, api, ext, jar)
+            spider.siteKey = key
+            spiders[key] = spider
+            spider
+        } catch (e: Throwable) {
+            log.error("load py spider failed: key={} api={} jar={}", key, api, jar, e)
+            Spider()
         }
     }
 

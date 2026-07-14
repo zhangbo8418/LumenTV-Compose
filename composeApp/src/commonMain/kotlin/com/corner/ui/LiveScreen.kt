@@ -47,6 +47,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -70,6 +71,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.WindowScope
+import androidx.compose.ui.zIndex
 import com.corner.catvodcore.bean.EpgData
 import com.corner.catvodcore.bean.Live
 import com.corner.catvodcore.bean.LiveChannel
@@ -79,6 +81,9 @@ import com.corner.catvodcore.viewmodel.GlobalAppState
 import com.corner.ui.live.LiveChannelLogo
 import com.corner.ui.live.LiveEpgOverlayPanel
 import com.corner.ui.nav.vm.LiveViewModel
+import com.corner.ui.player.CenterPlayOverlay
+import com.corner.ui.player.shouldShowCenterPlay
+import com.corner.ui.player.vlcj.LiveFrameController
 import kotlinx.coroutines.delay
 
 private enum class LiveOverlay {
@@ -98,9 +103,15 @@ fun WindowScope.LiveScene(
     var overlay by remember { mutableStateOf(LiveOverlay.None) }
     var showInfo by remember { mutableStateOf(true) }
     val focusRequester = remember { FocusRequester() }
+    val liveController = remember { LiveFrameController() }
+    val livePlayerState by liveController.state.collectAsState()
 
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { liveController.release() }
     }
 
     LaunchedEffect(overlay) {
@@ -168,6 +179,7 @@ fun WindowScope.LiveScene(
                         playHeaders = state.playHeaders,
                         channelName = state.selectedChannel?.name.orEmpty(),
                         useInternalPlayer = useInternalPlayer,
+                        controller = liveController,
                         onPlaybackError = vm::onPlaybackError,
                         onPrevChannel = {
                             showInfo = true
@@ -178,6 +190,7 @@ fun WindowScope.LiveScene(
                             vm.nextChannel()
                         },
                         togglePlayOnClick = false,
+                        showCenterPlay = false,
                         modifier = Modifier.fillMaxSize(),
                     )
 
@@ -189,7 +202,7 @@ fun WindowScope.LiveScene(
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .pointerInput(overlay) {
+                        .pointerInput(overlay, livePlayerState.state) {
                             detectTapGestures(
                                 onDoubleTap = {
                                     // 手势层盖在播放器之上，双击需在此切换全屏（含恢复）
@@ -201,6 +214,10 @@ fun WindowScope.LiveScene(
                                     val w = size.width.toFloat().coerceAtLeast(1f)
                                     when {
                                         overlay != LiveOverlay.None -> overlay = LiveOverlay.None
+                                        livePlayerState.shouldShowCenterPlay() &&
+                                            offset.x in (w * 0.35f)..(w * 0.65f) -> {
+                                            liveController.togglePlayStatus()
+                                        }
                                         offset.x < w * 0.28f -> {
                                             overlay = LiveOverlay.ChannelMenu
                                             showInfo = true
@@ -215,6 +232,15 @@ fun WindowScope.LiveScene(
                             )
                         }
                 )
+
+                // 手势层之上绘制，避免被挡住点不到
+                if (useInternalPlayer && state.playUrl.isNotBlank()) {
+                    CenterPlayOverlay(
+                        visible = livePlayerState.shouldShowCenterPlay(),
+                        onPlay = { liveController.togglePlayStatus() },
+                        modifier = Modifier.align(Alignment.Center).zIndex(6f),
+                    )
+                }
             }
         }
 

@@ -1,15 +1,12 @@
 package com.corner.util.io
 
-import com.corner.ui.scene.SnackBar
 import com.corner.util.system.OperatingSystem
 import com.corner.util.system.SysVerUtil
-import org.slf4j.LoggerFactory
 import java.io.File
 import java.nio.file.Path
 
 object Paths {
     private const val APP_NAME = "Lumen-TV"
-    private val log = LoggerFactory.getLogger("Paths")
 
     private val userDataDir = getUserDataDir()
 
@@ -50,13 +47,16 @@ object Paths {
         return path.path
     }
 
-    fun local(jar: String): File {
-        val file = File(jar.replace("file:/", "").replace("file:\\", ""))
-        return if(file.exists()) file else {
-            log.info("jar文件不存在 $jar")
-            SnackBar.postMsg("本地Jar文件不存在", type = SnackBar.MessageType.WARNING)
-            File(jar)
+    /**
+     * 对齐 TV Path.local：解析 file: 路径并返回 File，不存在也不弹「Jar」提示。
+     * jar 缺失提示应由 JarLoader 在真正加载 spider.jar 时负责。
+     */
+    fun local(path: String): File {
+        val converted = when {
+            path.startsWith("file:", ignoreCase = true) -> Urls.convert(path)
+            else -> path
         }
+        return File(converted)
     }
 
     fun jar(): File {

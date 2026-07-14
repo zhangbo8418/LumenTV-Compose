@@ -17,14 +17,53 @@ import kotlinx.coroutines.launch
 import org.apache.commons.lang3.StringUtils
 import java.io.File
 import java.lang.reflect.Method
+import java.net.URL
 import java.net.URLClassLoader
 import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * 对 spider.jar 子优先：jar 内 Util/Json/Path 等完整实现优先于宿主精简 stub。
+ * TV 父优先可行是因为 Android spider 编译期就依赖宿主 catvod API；
+ * 桌面 CatVodSpider 自带 Swing/网盘 Util，父优先会盖住 jar 导致 NoSuchMethodError。
+ * crawler 基类仍走父加载器，保证与宿主 Spider 类型一致。
+ */
+private class SpiderJarClassLoader(
+    urls: Array<URL>,
+    parent: ClassLoader,
+) : URLClassLoader(urls, parent) {
+    override fun loadClass(name: String, resolve: Boolean): Class<*> {
+        if (name.startsWith("java.") ||
+            name.startsWith("javax.") ||
+            name.startsWith("jdk.") ||
+            name.startsWith("sun.") ||
+            name.startsWith("com.github.catvod.crawler.")
+        ) {
+            return super.loadClass(name, resolve)
+        }
+        synchronized (getClassLoadingLock(name)) {
+            findLoadedClass(name)?.let {
+                if (resolve) resolveClass(it)
+                return it
+            }
+            try {
+                val c = findClass(name)
+                if (resolve) resolveClass(c)
+                return c
+            } catch (_: ClassNotFoundException) {
+                // fall through to parent
+            }
+            val c = parent.loadClass(name)
+            if (resolve) resolveClass(c)
+            return c
+        }
+    }
+}
 
 object JarLoader {
     private val log = thisLogger()
 
     /**
-     * jar包加载器（对齐 TV：父优先 URLClassLoader，宿主 catvod API 覆盖 jar 内同名类）
+     * jar包加载器（桌面：子优先，使用 jar 内 Util/Path）
      * */
     private val loaders: ConcurrentHashMap<String, URLClassLoader> by lazy { ConcurrentHashMap() }
 
@@ -75,18 +114,18 @@ object JarLoader {
 
     private fun loadJarLocal(key: String, spider: String) {
         var currentRetryCount = 0
-        var currentSpider = spider
+        // 对齐 TV：spider.jar;md5;hash
+        var currentSpider = spider.substringBefore(Constant.MD5_SPLIT).trim()
+        val md5Suffix = spider.substringAfter(Constant.MD5_SPLIT, "").trim()
         var currentProcessedUrl: String? = null
 
         while (true) {
             try {
                 if (StringUtils.isBlank(currentSpider)) return
 
-                val texts = currentSpider.split(Constant.MD5_SPLIT)
-                val md5 = if (texts.size <= 1) "" else texts[1].trim()
-                val jar = texts[0]
+                val md5 = md5Suffix
+                val jar = currentSpider
                 log.debug("md5 is {}", md5)
-                log.debug("texts is {}", texts)
                 when {
                     md5.isNotEmpty() && Utils.equals(parseJarUrl(jar), md5) -> {
                         log.info("md5校验成功，以md5方式加载...")
@@ -95,8 +134,14 @@ object JarLoader {
                     }
 
                     jar.startsWith("file") -> {
+                        val file = Paths.local(jar)
+                        if (!file.exists()) {
+                            log.warn("本地 jar 不存在: {} (raw={})", file.path, jar)
+                            SnackBar.postMsg("本地Jar文件不存在", type = SnackBar.MessageType.WARNING)
+                            throw IllegalStateException("本地Jar文件不存在: ${file.path}")
+                        }
                         log.info("jar文件已存在，以文件方式加载...")
-                        load(key, Paths.local(jar))
+                        load(key, file)
                         return
                     }
 
@@ -161,7 +206,7 @@ object JarLoader {
      */
     private fun load(key: String, jar: File) {
         log.debug("load jar {},jaKey {}", jar, key)
-        loaders[key] = URLClassLoader(arrayOf(jar.toURI().toURL()), this.javaClass.classLoader)
+        loaders[key] = SpiderJarClassLoader(arrayOf(jar.toURI().toURL()), this.javaClass.classLoader)
         putProxy(key)
         invokeInit(key)
     }

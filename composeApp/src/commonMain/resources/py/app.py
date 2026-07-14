@@ -86,40 +86,35 @@ def init(ru, extend, api, cache):
     ru.init(extend)
 
 
+def _dumps(result):
+    # Spider 常用 pass/None；json.dumps(None) 会变成 "null"，宿主 JSON 解析直接炸
+    if result is None:
+        result = {}
+    return json.dumps(result, ensure_ascii=False)
+
+
 def homeContent(ru, filter):
-    result = ru.homeContent(filter)
-    formatJo = json.dumps(result, ensure_ascii=False)
-    return formatJo
+    return _dumps(ru.homeContent(filter))
 
 
 def homeVideoContent(ru):
-    result = ru.homeVideoContent()
-    formatJo = json.dumps(result, ensure_ascii=False)
-    return formatJo
+    return _dumps(ru.homeVideoContent())
 
 
 def categoryContent(ru, tid, pg, filter, extend):
-    result = ru.categoryContent(tid, pg, filter, str2json(extend))
-    formatJo = json.dumps(result, ensure_ascii=False)
-    return formatJo
+    return _dumps(ru.categoryContent(tid, pg, filter, str2json(extend)))
 
 
 def detailContent(ru, array):
-    result = ru.detailContent(str2json(array))
-    formatJo = json.dumps(result, ensure_ascii=False)
-    return formatJo
+    return _dumps(ru.detailContent(str2json(array)))
 
 
 def searchContent(ru, key, quick, pg="1"):
-    result = ru.searchContent(key, quick, pg)
-    formatJo = json.dumps(result, ensure_ascii=False)
-    return formatJo
+    return _dumps(ru.searchContent(key, quick, pg))
 
 
 def playerContent(ru, flag, id, vipFlags):
-    result = ru.playerContent(flag, id, str2json(vipFlags))
-    formatJo = json.dumps(result, ensure_ascii=False)
-    return formatJo
+    return _dumps(ru.playerContent(flag, id, str2json(vipFlags)))
 
 
 def liveContent(ru, url):
@@ -133,9 +128,7 @@ def localProxy(ru, param):
 
 
 def action(ru, action):
-    result = ru.action(action)
-    formatJo = json.dumps(result, ensure_ascii=False)
-    return formatJo
+    return _dumps(ru.action(action))
 
 
 def destroy(ru):

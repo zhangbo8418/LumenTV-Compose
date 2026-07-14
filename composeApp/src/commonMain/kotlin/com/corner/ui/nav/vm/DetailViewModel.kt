@@ -561,8 +561,15 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
         } else {
             loadVodDetail(dt)
             val detail = _state.value.detail
+            // 网盘登录页：只展示状态/操作，不要自动起播（否则会立刻再弹码或报详情为空）
+            val isIntroduce = detail.site?.api == "csp_Introduce" || detail.site?.key.equals("Intruduce", true) == true
+            if (detail.isEmpty() || isIntroduce) {
+                log.info("详情无需自动起播: name={} introduce={}", detail.vodName, isIntroduce)
+                return
+            }
             val ep = detail.subEpisode.find { it.activated }
                 ?: detail.currentFlag.episodes.firstOrNull { it.activated }
+                ?: detail.vodFlags.firstOrNull()?.episodes?.firstOrNull()
                 ?: Episode.create("", "")
             startPlay(detail, ep)
         }
@@ -1602,7 +1609,8 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
     }
 
     private fun handleSpecialLink(ep: Episode, result: Result?): Boolean {
-        if (Utils.isDownloadLink(ep.url)) {
+        // 直播 flv/m3u8 等可播直链不要当成磁力/下载链
+        if (Utils.isDownloadLink(ep.url) && !com.corner.util.VideoSniffer.isVideoFormat(ep.url)) {
             isDownloadUrl.value = true
             _state.update { it.copy(isBuffering = false) }
             log.info("检测到磁力链接，将通过对话框提示用户选择，url:{}", ep.url)
@@ -1626,14 +1634,21 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
         val u = url.trim()
         if (u.isBlank()) return false
         val lower = u.lowercase()
-        if (lower.startsWith("http://") || lower.startsWith("https://")) return true
+        // 本地代理/缓存 m3u8：路径是 cached_m3u8 而非 *.m3u8，必须先于 VideoSniffer
+        if (lower.contains("lumen-m3u8") || lower.contains("cached_m3u8") ||
+            lower.contains("/proxy/") && (lower.contains("127.0.0.1") || lower.contains("localhost"))
+        ) {
+            return true
+        }
         if (lower.startsWith("file:") || lower.startsWith("rtmp") ||
             lower.startsWith("rtp://") || lower.startsWith("udp://")
         ) {
             return true
         }
-        // 本地缓存 m3u8：Windows 为 C:\...\lumen-m3u8\xxx.m3u8，不能只认 Unix 的 /
-        if (lower.contains("lumen-m3u8") || lower.contains("cached_m3u8")) return true
+        // 禁止把播放页 HTML（.html/.php 等）当成直链喂给 VLC
+        if (lower.startsWith("http://") || lower.startsWith("https://")) {
+            return com.corner.util.VideoSniffer.isVideoFormat(u)
+        }
         val isWinAbs = u.length >= 3 && u[0].isLetter() && u[1] == ':' &&
             (u[2] == '\\' || u[2] == '/')
         if ((u.startsWith("/") || isWinAbs) && (
@@ -2260,7 +2275,8 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
     }
 
     private fun handleDownloadLinkCheck(url: Url?): Boolean {
-        val isDownloadLink = Utils.isDownloadLink(url.toString())
+        val raw = url.toString()
+        val isDownloadLink = Utils.isDownloadLink(raw) && !com.corner.util.VideoSniffer.isVideoFormat(raw)
 
         if (isDownloadLink) {
             log.warn("切换清晰度失败！当前播放链接是下载链接！")

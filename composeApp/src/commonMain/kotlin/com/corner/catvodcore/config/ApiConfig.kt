@@ -128,15 +128,20 @@ object ApiConfig {
             BaseLoader.parseJar(apiConfig.spider, true)
             ParseConfig.init(apiConfig.parses, cfg.parse)
 
+            // 先解析站点相对 api/ext，再 setHome，避免首页抢跑拿到 ./js/drpy2.min.js
+            api.initSite()
+
             val homeSite = if (cfg.home?.isNotBlank() == true) {
                 api.sites.find { it.key == cfg.home }
             } else {
-                api.sites.firstOrNull()
+                api.sites.firstOrNull { !it.isHide() } ?: api.sites.firstOrNull()
             }
             setHome(homeSite)
 
             scope.launch {
                 api.sites = Db.Site.update(cfg, api)
+                // DB 回写后可能带回相对路径，再解析一次
+                api.initSite()
                 LiveConfig.syncFromApi()
             }
 
@@ -181,6 +186,9 @@ object ApiConfig {
 
     fun getSpider(site: Site): Spider {
         val jar = site.jar?.takeIf { it.isNotBlank() } ?: api.spider
+        // 防御竞态：首页若早于 initSite，这里再解析一次相对路径
+        val resolvedApi = parseApi(site.api, api.url)
+        if (resolvedApi != site.api) site.api = resolvedApi
         return BaseLoader.getSpider(site.key, site.api, site.ext ?: "", jar)
     }
 
@@ -202,7 +210,15 @@ object ApiConfig {
         while (attempts < maxAttempts) {
             when {
                 StringUtils.isBlank(currentExt) -> return currentExt
-                currentExt.startsWith("file") -> return Files.readString(Paths.get(Urls.convert(currentExt)))
+                currentExt.startsWith("file") -> {
+                    val path = Urls.convert(currentExt)
+                    val file = Paths.get(path)
+                    if (!Files.exists(file)) {
+                        log.warn("parseExt 本地文件不存在，保留原 ext: {}", path)
+                        return ext
+                    }
+                    return Files.readString(file)
+                }
                 currentExt.endsWith(".js") || currentExt.endsWith(".json") || currentExt.endsWith(".txt") -> {
                     val newExt = Urls.convert(api.url ?: "", currentExt)
                     if (newExt == currentExt) return currentExt // 无变化时终止
@@ -213,15 +229,19 @@ object ApiConfig {
             }
             attempts++
         }
-        throw IllegalStateException("Failed to parseExt after $maxAttempts attempts")
+        log.warn("parseExt 超过最大重试，保留原 ext: {}", ext)
+        return ext
     }
 
     fun parseApi(str: String, base: String? = null): String {
         if (StringUtils.isBlank(str)) return ""
         if (str.startsWith("http") || str.startsWith("file")) return str
+        // js/py 相对路径按配置基址解析（如 ./js/drpy2.min.js → config 同级），不要相对 spider.jar
         if (str.endsWith(".js") || str.endsWith(".py")) {
-            val resolveBase = base?.takeIf { it.isNotBlank() }
-                ?: api.spider.takeIf { it.isNotBlank() }
+            val resolveBase = sequenceOf(base, api.url, api.spider)
+                .mapNotNull { it?.takeIf { u -> u.isNotBlank() } }
+                .firstOrNull { it.startsWith("http") || it.startsWith("file") }
+                ?: base?.takeIf { it.isNotBlank() }
                 ?: api.url.orEmpty()
             if (resolveBase.isNotBlank()) {
                 val resolved = Urls.convert(resolveBase, str)
@@ -315,13 +335,17 @@ fun Api.init() {
 fun Api.initSite() {
     if (sites.isEmpty()) return
     for (site in sites) {
-        // 对齐 TV：站点未指定 jar 时继承配置 spider
-        if (site.jar.isNullOrBlank() && spider.isNotBlank()) {
-            site.jar = spider
+        try {
+            // 对齐 TV：站点未指定 jar 时继承配置 spider
+            if (site.jar.isNullOrBlank() && spider.isNotBlank()) {
+                site.jar = spider
+            }
+            // js/py 相对路径相对配置 URL；csp 不走相对解析
+            site.api = ApiConfig.parseApi(site.api, url)
+            site.ext = ApiConfig.parseExt(site.ext ?: "")
+        } catch (e: Exception) {
+            log.warn("初始化站点失败，已跳过: key={} name={} err={}", site.key, site.name, e.message)
         }
-        val jarBase = site.jar?.takeIf { it.isNotBlank() } ?: spider
-        site.api = ApiConfig.parseApi(site.api, jarBase)
-        site.ext = ApiConfig.parseExt(site.ext)
     }
     if (GlobalAppState.home.value.isEmpty() && sites.isNotEmpty()) {
         GlobalAppState.home.value = sites.firstOrNull { !it.isHide() } ?: sites.first()

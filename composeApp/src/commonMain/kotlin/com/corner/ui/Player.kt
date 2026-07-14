@@ -47,9 +47,11 @@ import com.corner.util.net.Utils
 import com.corner.catvodcore.viewmodel.GlobalAppState
 import com.corner.ui.nav.vm.DetailViewModel
 import com.corner.ui.danmaku.DanmakuOverlay
+import com.corner.ui.player.CenterPlayOverlay
 import com.corner.ui.player.DefaultControls
 import com.corner.ui.player.PlayerState
 import com.corner.ui.player.frame.FrameContainer
+import com.corner.ui.player.shouldShowCenterPlay
 import com.corner.ui.player.vlcj.VlcjFrameController
 import com.corner.ui.scene.Dialog
 import com.corner.ui.theme.PlayerDarkColors
@@ -91,6 +93,7 @@ fun Player(
     var mousePosition by remember { mutableStateOf(Offset.Zero) }
     val showTip = controller.showTip.collectAsState()
     val tip = controller.tip.collectAsState()
+    val playerState by controller.state.collectAsState()
     val videoFullScreen = GlobalAppState.videoFullScreen.collectAsState()
     val showMediaInfoDialog = remember { mutableStateOf(false) }
     var isRightArrowPressed by remember { mutableStateOf(false) }
@@ -258,6 +261,14 @@ fun Player(
         DanmakuOverlay(
             controller = controller,
             modifier = Modifier.fillMaxSize().clip(roundedShape),
+        )
+        CenterPlayOverlay(
+            visible = playerState.shouldShowCenterPlay(),
+            onPlay = {
+                controller.togglePlayStatus()
+                showControllerBar.value = true
+            },
+            modifier = Modifier.align(Alignment.Center),
         )
         AnimatedVisibility(
             showControllerBar.value,

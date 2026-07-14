@@ -12,6 +12,7 @@ import com.corner.catvodcore.live.LiveSuperParser
 import com.corner.catvodcore.live.LiveWebParser
 import com.corner.catvodcore.loader.BaseLoader
 import com.corner.ui.scene.SnackBar
+import com.corner.util.PlayPageSniffer
 import com.corner.util.VideoSniffer
 import com.corner.util.core.needParse
 import com.corner.util.core.isUseParse
@@ -54,15 +55,26 @@ object ParseHelper {
 
         SnackBar.postMsg("正在解析播放地址...", type = SnackBar.MessageType.INFO, key = "vod_parse")
 
-        val parse = forcedParse ?: resolveParse(result, useParse) ?: run {
-            log.warn("未找到可用解析器")
+        val headers = buildHeaders(result, forcedParse)
+        val parse = forcedParse ?: resolveParse(result, useParse)
+        val parsedUrl = when {
+            parse != null -> executeParse(parse, webUrl, result.flag.orEmpty(), headers, timeoutMs)
+            else -> {
+                log.warn("未找到可用解析器，尝试播放页嗅探")
+                null
+            }
+        } ?: PlayPageSniffer.sniff(webUrl, headers)
+
+        if (parsedUrl.isNullOrBlank() || parsedUrl.length <= 40) {
+            if (!parsedUrl.isNullOrBlank()) {
+                log.warn("嗅探/解析结果过短，丢弃: {}", parsedUrl.take(80))
+            }
             return null
         }
-        val headers = buildHeaders(result, parse)
-        val parsedUrl = executeParse(parse, webUrl, result.flag.orEmpty(), headers, timeoutMs)
-            ?: return null
-
-        if (parsedUrl.length <= 40) return null
+        if (!VideoSniffer.isVideoFormat(parsedUrl)) {
+            log.warn("嗅探/解析结果不是视频格式: {}", parsedUrl.take(120))
+            return null
+        }
 
         result.url = Url().add(parsedUrl)
         result.parse = 0
@@ -158,10 +170,10 @@ object ParseHelper {
         }
     }
 
-    private fun buildHeaders(result: Result, parse: Parse): Map<String, String> {
+    private fun buildHeaders(result: Result, parse: Parse?): Map<String, String> {
         val map = linkedMapOf<String, String>()
         result.header?.let { map.putAll(it) }
-        parse.ext?.header?.forEach { (key, value) -> map.putIfAbsent(key, value) }
+        parse?.ext?.header?.forEach { (key, value) -> map.putIfAbsent(key, value) }
         return map
     }
 

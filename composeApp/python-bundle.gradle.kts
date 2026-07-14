@@ -15,7 +15,17 @@ import java.util.zip.ZipInputStream
 
 val bundledPythonVersion = "3.12.13"
 val bundledPythonTag = "20260623" // python-build-standalone release tag（非 Windows）
-val bundledPythonPackages = listOf("requests", "lxml", "pycryptodome", "certifi")
+// 对齐 TV/chaquo/requirements.txt，另加 certifi 供桌面 SSL
+val bundledPythonPackages = listOf(
+    "lxml",
+    "ujson",
+    "pyquery",
+    "requests",
+    "cachetools",
+    "pycryptodome",
+    "beautifulsoup4",
+    "certifi",
+)
 
 /** Windows 用 Win7 兼容发行版；其它平台用 PBS */
 data class PythonTarget(

@@ -77,18 +77,19 @@ object JsLoader {
     }
 
     fun getSpider(key: String, api: String, ext: String, jar: String): Spider {
-        return spiders.computeIfAbsent(key) {
-            try {
-                QuickJsNative.ensureLoaded()
-                val jsSpider = loader.spider(api, BaseLoader.dex(jar))
-                jsSpider.siteKey = key
-                val adapter = JsSpiderAdapter(jsSpider)
-                adapter.init(ext)
-                adapter
-            } catch (e: Throwable) {
-                log.error("load js spider failed: key={} api={}", key, api, e)
-                Spider()
-            }
+        spiders[key]?.let { return it }
+        return try {
+            QuickJsNative.ensureLoaded()
+            val jsSpider = loader.spider(api, BaseLoader.dex(jar))
+            jsSpider.siteKey = key
+            val adapter = JsSpiderAdapter(jsSpider)
+            adapter.init(ext)
+            spiders[key] = adapter
+            adapter
+        } catch (e: Throwable) {
+            log.error("load js spider failed: key={} api={}", key, api, e)
+            // 失败不缓存，避免相对路径竞态后永远空壳
+            Spider()
         }
     }
 

@@ -5,9 +5,9 @@ import java.util.Base64
 
 object DownloadUrlResolver {
     private val schemeLinks = setOf("magnet", "ed2k", "thunder", "flashget", "ftp")
+    // 仅归档/安装包等；流媒体扩展留给播放器，勿当「下载链」弹窗
     private val httpExtensions = setOf(
-        ".torrent", ".mp4", ".mkv", ".avi", ".flv", ".wmv", ".mov", ".m4v",
-        ".ts", ".zip", ".rar", ".7z", ".apk", ".iso", ".mp3", ".flac", ".wav",
+        ".torrent", ".zip", ".rar", ".7z", ".apk", ".iso",
     )
 
     fun isDownloadLink(url: String): Boolean {

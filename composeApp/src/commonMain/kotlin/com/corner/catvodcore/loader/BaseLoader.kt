@@ -3,6 +3,7 @@ package com.corner.catvodcore.loader
 import com.corner.util.net.Utils
 import com.github.catvod.crawler.Spider
 import org.apache.commons.lang3.StringUtils
+import java.io.ByteArrayInputStream
 
 object BaseLoader {
     private fun isJs(api: String): Boolean = api.contains(".js")
@@ -32,6 +33,14 @@ object BaseLoader {
     }
 
     fun proxy(params: Map<String, String>): Array<Any>? {
+        // 爬虫侧 Proxy.adjustPort 探测本机端口，不依赖 jar 是否已加载
+        if (params["do"] == "ck") {
+            return arrayOf(
+                200,
+                "text/plain; charset=utf-8",
+                ByteArrayInputStream("ok".toByteArray(Charsets.UTF_8)),
+            )
+        }
         params["siteKey"]?.takeIf { it.isNotBlank() }?.let { siteKey ->
             val site = com.corner.catvodcore.config.ApiConfig.getSite(siteKey) ?: return null
             return getSpider(site.key, site.api, site.ext ?: "", site.jar ?: "").proxy(params)

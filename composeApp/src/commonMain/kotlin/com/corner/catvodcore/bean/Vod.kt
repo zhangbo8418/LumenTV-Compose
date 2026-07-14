@@ -34,7 +34,7 @@ data class Vod(
     @SerialName("vod_play_url") var vodPlayUrl: String? = null,
     @SerialName("vod_tag") var vodTag: String? = null,
     @SerialName("cate") var cate: String? = null,
-    @SerialName("style") var style: String? = null,
+    @SerialName("style") var style: Style? = null,
     @SerialName("land")
     @Serializable(ToStringSerializer::class)
     var land: String? = null,

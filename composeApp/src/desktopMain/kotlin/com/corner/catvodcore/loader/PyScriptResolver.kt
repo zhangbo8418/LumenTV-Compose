@@ -1,5 +1,6 @@
 package com.corner.catvodcore.loader
 
+import com.corner.catvodcore.Constant
 import com.corner.catvodcore.config.ApiConfig
 import com.corner.util.io.Paths
 import com.corner.util.io.Urls
@@ -31,6 +32,7 @@ object PyScriptResolver {
                     source.copyTo(target, overwrite = true)
                     return target
                 }
+                log.warn("本地 Python 脚本不存在: {}", source.path)
             }
 
             File(resolved).exists() -> {
@@ -51,8 +53,8 @@ object PyScriptResolver {
         if (File(api).exists()) return File(api).absolutePath
 
         val bases = listOfNotNull(
-            jar.takeIf { it.isNotBlank() },
-            ApiConfig.api.spider.takeIf { it.isNotBlank() },
+            stripMd5(jar).takeIf { it.isNotBlank() },
+            stripMd5(ApiConfig.api.spider).takeIf { it.isNotBlank() },
             ApiConfig.api.url?.takeIf { it.isNotBlank() },
         )
         for (base in bases) {
@@ -96,8 +98,8 @@ object PyScriptResolver {
 
     private fun locateJarFile(jar: String): File? {
         val candidates = listOfNotNull(
-            jar.takeIf { it.isNotBlank() },
-            ApiConfig.api.spider.takeIf { it.isNotBlank() },
+            stripMd5(jar).takeIf { it.isNotBlank() },
+            stripMd5(ApiConfig.api.spider).takeIf { it.isNotBlank() },
         )
         for (candidate in candidates) {
             val url = when {
@@ -118,6 +120,10 @@ object PyScriptResolver {
         }
         return null
     }
+
+    /** 标准 spider.jar;md5;hash，取路径部分 */
+    private fun stripMd5(value: String?): String =
+        value?.substringBefore(Constant.MD5_SPLIT)?.trim().orEmpty()
 
     private fun normalizeJarEntry(api: String): String {
         return api.removePrefix("./").removePrefix("/").replace("\\", "/")

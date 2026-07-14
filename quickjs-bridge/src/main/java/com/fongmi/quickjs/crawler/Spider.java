@@ -164,14 +164,14 @@ public class Spider {
         });
     }
 
+    /** 对齐 TV：只从 spider.jar ClassLoader 加载 com.github.catvod.js.Function。 */
     private void createFun() {
         try {
             global = Global.create(ctx, executor);
-            if (dex != null) {
-                Class<?> clz = dex.loadClass("com.github.catvod.js.Function");
-                clz.getDeclaredConstructor(QuickJSContext.class).newInstance(ctx);
-            }
-        } catch (Throwable ignored) {
+            Class<?> clz = dex.loadClass("com.github.catvod.js.Function");
+            clz.getDeclaredConstructor(QuickJSContext.class).newInstance(ctx);
+        } catch (Throwable e) {
+            System.err.println("[quickjs] 加载 jar Function 失败: " + e.getClass().getSimpleName() + ": " + e.getMessage());
         }
     }
 

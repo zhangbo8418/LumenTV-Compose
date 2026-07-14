@@ -32,6 +32,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import com.corner.ui.nav.data.DialogState
 import com.corner.ui.nav.data.DialogState.changeDialogState
 import com.corner.ui.nav.data.ViewModelState
+import com.corner.ui.scene.SnackBar
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 
@@ -82,10 +83,13 @@ object SiteViewModel {
                     val spider = ApiConfig.getSpider(site)
                     val homeContent = spider.homeContent(true)
                     ApiConfig.setRecent(site)
-                    val rst: Result = Jsons.decodeFromString<Result>(homeContent)
+                    val rst: Result = decodeResultOrEmpty(homeContent)
                     if (rst.list.isNotEmpty()) result.value = rst
-                    val homeVideoContent = spider.homeVideoContent()
-                    rst.list.addAll(Jsons.decodeFromString<Result>(homeVideoContent).list)
+                    // homeVod 失败不应抹掉已成功的分类/筛选
+                    val homeVideoContent = runCatching { spider.homeVideoContent() }
+                        .onFailure { log.warn("homeVideoContent 失败 site={}: {}", site.name, it.message) }
+                        .getOrNull()
+                    rst.list.addAll(decodeResultOrEmpty(homeVideoContent).list)
                     result.value = rst.also { this.result.value = it }
                 }
 
@@ -159,7 +163,11 @@ object SiteViewModel {
                 detail.value = rst
             }
         } catch (e: Exception) {
-            log.debug("${site.name} 后端错误（已忽略）: {}", e.message)
+            log.error("${site.name} detailContent 失败: {}", e.message, e)
+            SnackBar.postMsg(
+                "${site.name}: ${e.message ?: "详情加载失败"}",
+                type = SnackBar.MessageType.ERROR
+            )
             return null
         }
         rst.list.forEach { it.site = site }
@@ -507,4 +515,16 @@ private fun isEmptyResult(result: Result): Boolean {
            result.types.isEmpty() && 
            result.filters.isEmpty() &&
            result.url.values.isEmpty()
+}
+
+/** py/js 可能返回 null、空串或非对象；避免整页 home 被 homeVod 拖垮 */
+private fun decodeResultOrEmpty(raw: String?): Result {
+    val text = raw?.trim().orEmpty()
+    if (text.isEmpty() || text == "null" || text == "undefined") return Result()
+    return try {
+        Jsons.decodeFromString<Result>(text)
+    } catch (e: Exception) {
+        log.warn("Result JSON 解析失败，按空结果处理: {}", e.message)
+        Result()
+    }
 }

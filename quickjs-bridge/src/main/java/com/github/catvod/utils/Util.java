@@ -25,7 +25,8 @@ import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 
 /**
- * 对齐 TV catvod Util（父优先由宿主提供），并补充桌面 spider.jar 常用扩展。
+ * 对齐 TV catvod Util（QuickJS / 宿主自用）。
+ * 桌面 spider.jar 的 Util/Path 由 SpiderJarClassLoader 子优先加载，不依赖本类补齐 spider API。
  */
 public class Util {
 
