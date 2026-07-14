@@ -29,6 +29,25 @@ object QuickJsNative {
             System.load(libFile.absolutePath)
             loaded.set(true)
             log.info("QuickJS native loaded: {}", libFile.absolutePath)
+            verifyRuntime()
+        }
+    }
+
+    /** Release 若 ProGuard 误删 JNI 回调方法，此处提前失败并给出明确提示 */
+    private fun verifyRuntime() {
+        runCatching {
+            com.whl.quickjs.wrapper.QuickJSContext.create().use { }
+        }.onFailure { e ->
+            val msg = e.message.orEmpty()
+            if (msg.contains("newFunction", ignoreCase = true) ||
+                msg.contains("getCreator", ignoreCase = true)
+            ) {
+                error(
+                    "QuickJS 原生库与 Java 层不匹配（常见原因：Release ProGuard 裁剪了 com.whl.quickjs）。" +
+                        "请更新 rules.pro 保留 com.whl.quickjs.** 后重新打包。原始错误: $msg"
+                )
+            }
+            throw e
         }
     }
 

@@ -153,6 +153,22 @@
 -keep class com.corner.server.** { *; }
 -keep class com.fongmi.quickjs.** { *; }
 
+# JCEF 网页嗅探：shrink 会掏空 CefRequest_N / BoolRef 等 _N JNI 桥，Release 嗅探静默失败
+-keep class org.cef.** { *; }
+-keep class me.friwi.jcefmaven.** { *; }
+
+# TV media 规则：保留所有 native 方法名（JCEF/JNA/VLCJ/QuickJS JNI 兜底）
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
+
+# QuickJS JNI 通过方法名反射调用 JSObjectCreator/QuickJSContext，shrink 后会 NoSuchMethodError: newFunction
+-keep class com.whl.quickjs.** { *; }
+-keep interface com.whl.quickjs.** { *; }
+-keepclassmembers class com.whl.quickjs.wrapper.QuickJSContext { *; }
+-keepclassmembers interface com.whl.quickjs.wrapper.JSObjectCreator { *; }
+-keep class com.whl.quickjs.wrapper.QuickJSContext$* { *; }
+
 # 针对性禁用警告（避免掩盖真实问题）
 -dontwarn io.ktor.**
 -dontwarn org.jboss.marshalling.**
