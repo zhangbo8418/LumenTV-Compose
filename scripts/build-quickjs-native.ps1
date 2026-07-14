@@ -72,7 +72,10 @@ try {
     $StaticRt = "-static-libgcc -static-libstdc++"
     $CFlags = "$Win7Defs $JniInc $StaticRt"
     $CxxFlags = "$Win7Defs $JniInc $StaticRt"
-    $LdFlags = "-static-libgcc -static-libstdc++ -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic -Wl,--subsystem,windows:6.01"
+    # -static 是 gcc 驱动级参数（不受参数位置影响），把 libgcc/libstdc++/winpthread 全部静态进 DLL。
+    # 勿用 "-Wl,-Bstatic -lwinpthread"：CMake 把 SHARED_LINKER_FLAGS 放在目标文件之前，
+    # 前置的 -l 不解析任何符号等于没加，驱动末尾默认追加的 -lpthread 仍是动态链接。
+    $LdFlags = "-static -static-libgcc -static-libstdc++ -Wl,--subsystem,windows:6.01"
 
     $Generator = "MinGW Makefiles"
     if (Get-Command ninja -ErrorAction SilentlyContinue) {
@@ -152,7 +155,14 @@ try {
             "MSVCP140",
             "MSVCR1",
             "CONCRT140",
-            "api-ms-win-core-path-l1-1-0"
+            "api-ms-win-core-path-l1-1-0",
+            # UCRT：Win7 无 KB2999226 时不存在，必须用 msvcrt 目标的 MinGW 工具链
+            "ucrtbase.dll",
+            "api-ms-win-crt-",
+            # MinGW 运行时动态依赖：说明 -static 没生效
+            "libwinpthread",
+            "libgcc_s",
+            "libstdc++"
         )
         foreach ($pat in $hardFail) {
             if ($depsText -match [regex]::Escape($pat)) {
