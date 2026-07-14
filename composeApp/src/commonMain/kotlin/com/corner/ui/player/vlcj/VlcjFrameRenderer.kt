@@ -37,17 +37,42 @@ class VlcjFrameRenderer(
     // 帧数据
     private var byteArray: ByteArray? = null
     private var info: ImageInfo? = null
-    
-    // 最新帧：只放 AtomicReference，由 Compose withFrameNanos 拉取后再写入 MutableState
-    private val latestFrame = AtomicReference<ImageBitmap?>(null)
 
-    fun peekVideoFrame(): ImageBitmap? = latestFrame.get()
-    
+    /** 发布给 Compose 的帧及其底层 Bitmap（回收时需要对应关系） */
+    private class PublishedFrame(val imageBitmap: ImageBitmap, val bitmap: Bitmap)
+
+    // 最新帧：只放 AtomicReference，由 Compose withFrameNanos 拉取后再写入 MutableState
+    private val latestFrame = AtomicReference<PublishedFrame?>(null)
+
+    /**
+     * UI 线程每帧调用。旧帧 Bitmap 只在这里回收：UI 拉取到新帧后，
+     * 更旧的帧在同线程串行保证下不可能再被绘制，此时回收才安全。
+     * 固定帧数窗口的延迟回收在慢机器（Win7/OpenGL）上会赶上正在绘制的帧，
+     * 导致 Skiko makeFromBitmap 读已释放内存而 SIGSEGV。
+     */
+    fun peekVideoFrame(): ImageBitmap? {
+        if (latestFrame.get() == null) return null
+        synchronized(bitmapSwapLock) {
+            // 必须在锁内重读：release/cleanup 在锁内置空并关闭旧帧，锁外读到的引用可能已失效
+            val frame = latestFrame.get() ?: return null
+            uiHeldBitmap = frame.bitmap
+            recycleInFlight(exclude1 = frame.bitmap, exclude2 = currentBitmap)
+            return frame.imageBitmap
+        }
+    }
+
     // 当前和待释放的 Bitmap
     private var currentBitmap: Bitmap? = null
-    /** Compose 可能仍在画这些帧，必须延迟回收，否则 Skiko RasterFromBitmap SIGSEGV */
+
+    /** UI 线程当前持有（可能仍在绘制）的帧，任何路径都不得同步关闭它 */
+    @Volatile
+    private var uiHeldBitmap: Bitmap? = null
+
+    /** 等待 UI 拉帧后回收的旧帧；VLC display 线程只入队，绝不在此队列上做回收 */
     private val inFlightBitmaps = ArrayDeque<Bitmap>()
-    private val maxInFlight = 6
+
+    /** UI 长时间不拉帧（最小化/卡顿）时的丢帧阈值，防止 Bitmap 无限累积 */
+    private val maxInFlight = 24
     
     @Volatile
     private var isReleased = false
@@ -147,27 +172,23 @@ class VlcjFrameRenderer(
 
                         if (isReleased || !renderEnabled) return
 
-                        val bmp = bitmapPool.acquire(width, height)
-                        bmp.installPixels(pixels)
-
                         synchronized(bitmapSwapLock) {
-                            if (isReleased || !renderEnabled) {
-                                bitmapPool.release(bmp)
-                                return
-                            }
-                            currentBitmap?.let { old ->
-                                inFlightBitmaps.addLast(old)
-                                drainInFlight(keep = maxInFlight)
-                            }
+                            if (isReleased || !renderEnabled) return
+                            // UI 长时间不拉帧时丢弃新帧（不发布即安全），绝不在本线程回收旧帧
+                            if (inFlightBitmaps.size >= maxInFlight) return
+                            val bmp = bitmapPool.acquire(width, height)
+                            bmp.installPixels(pixels)
+                            currentBitmap?.let { inFlightBitmaps.addLast(it) }
                             currentBitmap = bmp
                             if (!bmp.isClosed) {
-                                publishFrame(bmp.asComposeImageBitmap())
+                                latestFrame.set(PublishedFrame(bmp.asComposeImageBitmap(), bmp))
                             }
                         }
                     } catch (e: Exception) {
                         log.error("渲染帧时发生错误", e)
-                        publishFrame(null)
+                        latestFrame.set(null)
                         synchronized(bitmapSwapLock) {
+                            // 只丢引用不 close：UI 可能仍在绘制，交给 Skiko cleaner 回收
                             currentBitmap = null
                         }
                     }
@@ -182,10 +203,14 @@ class VlcjFrameRenderer(
         )
     }
     
-    /** 只回收超出保留窗口的旧帧 */
-    private fun drainInFlight(keep: Int) {
-        while (inFlightBitmaps.size > keep) {
-            val bitmap = inFlightBitmaps.removeFirst()
+    /** 回收所有待回收帧（排除 UI 正持有的与最新发布的）。必须在 bitmapSwapLock 内调用 */
+    private fun recycleInFlight(exclude1: Bitmap?, exclude2: Bitmap?) {
+        if (inFlightBitmaps.isEmpty()) return
+        val iterator = inFlightBitmaps.iterator()
+        while (iterator.hasNext()) {
+            val bitmap = iterator.next()
+            if (bitmap === exclude1 || bitmap === exclude2) continue
+            iterator.remove()
             if (!bitmap.isClosed) {
                 bitmapPool.release(bitmap)
             }
@@ -203,14 +228,9 @@ class VlcjFrameRenderer(
         renderEnabled = true
     }
 
-    /** 仅更新 AtomicReference；禁止在此写 Compose MutableState（会卡死 UI） */
-    private fun publishFrame(bitmap: ImageBitmap?) {
-        latestFrame.set(bitmap)
-    }
-
     /** 清空画面，不销毁 Bitmap，避免 Skiko SIGSEGV */
     fun clearFrameSoft() {
-        publishFrame(null)
+        latestFrame.set(null)
     }
 
     /**
@@ -218,7 +238,7 @@ class VlcjFrameRenderer(
      */
     fun cleanup() {
         renderEnabled = false
-        publishFrame(null)
+        latestFrame.set(null)
         synchronized(bitmapSwapLock) {
             currentBitmap?.let { inFlightBitmaps.addLast(it) }
             currentBitmap = null
@@ -245,16 +265,21 @@ class VlcjFrameRenderer(
         
         renderEnabled = false
         isReleased = true
-        publishFrame(null)
         try {
             log.debug("=====开始释放帧渲染器资源=====")
             synchronized(bitmapSwapLock) {
+                latestFrame.set(null)
                 currentBitmap?.let { inFlightBitmaps.addLast(it) }
                 currentBitmap = null
+                // UI 可能仍持有最后画的一帧（FrameContainer 的 bitmap state），
+                // 同步 close 会让退出瞬间的最后一次绘制读到已释放内存。
+                // 这里只丢引用，交给 Skiko cleaner 在 GC 后回收（每次至多泄压一帧）。
+                val held = uiHeldBitmap
                 while (inFlightBitmaps.isNotEmpty()) {
                     val bitmap = inFlightBitmaps.removeFirst()
-                    if (!bitmap.isClosed) bitmap.close()
+                    if (bitmap !== held && !bitmap.isClosed) bitmap.close()
                 }
+                uiHeldBitmap = null
             }
             bitmapPool.clear()
             byteArray = null
