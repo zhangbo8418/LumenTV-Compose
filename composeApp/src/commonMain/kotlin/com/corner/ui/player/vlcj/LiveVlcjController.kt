@@ -207,7 +207,11 @@ class LiveVlcjController : PlayerController {
     }
 
     /** 换台/换线：先 pause 再 prepare，避免旧台音频拖尾；快速连切只保留最后一档 */
-    fun switchChannel(url: String, headers: Map<String, String>): PlayerController {
+    fun switchChannel(
+        url: String,
+        headers: Map<String, String>,
+        onSwitched: (() -> Unit)? = null,
+    ): PlayerController {
         val gen = switchGeneration.incrementAndGet()
         switchJob?.cancel()
         switchJob = controllerScope.launch {
@@ -216,11 +220,15 @@ class LiveVlcjController : PlayerController {
                 loadURL(url, 10000, headers)
                 if (gen != switchGeneration.get() || !isActive) return@launch
                 catch { player?.controls()?.play() }
+                if (gen == switchGeneration.get()) {
+                    onSwitched?.invoke()
+                }
             } catch (_: CancellationException) {
                 // 被下一次换台取消
             } catch (e: Exception) {
                 if (gen == switchGeneration.get()) {
                     log.error("直播换台失败", e)
+                    onSwitched?.invoke()
                 }
             }
         }

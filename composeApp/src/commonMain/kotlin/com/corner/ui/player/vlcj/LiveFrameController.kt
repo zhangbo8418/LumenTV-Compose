@@ -29,13 +29,25 @@ class LiveFrameController(
     override val bytes = _bytes.asStateFlow()
 
     override fun load(url: String): PlayerController {
-        controller.switchChannel(url, emptyMap())
+        beginChannelSwitch()
+        controller.switchChannel(url, emptyMap()) { endChannelSwitch() }
         return controller
     }
 
     fun load(url: String, headers: Map<String, String>): PlayerController {
-        controller.switchChannel(url, headers)
+        beginChannelSwitch()
+        controller.switchChannel(url, headers) { endChannelSwitch() }
         return controller
+    }
+
+    /** 换台：先停渲染+清画面，避免旧帧 Bitmap 被池复用后与新频道交替闪烁 */
+    private fun beginChannelSwitch() {
+        frameRenderer.pauseRendering()
+        frameRenderer.clearFrameSoft()
+    }
+
+    private fun endChannelSwitch() {
+        if (!released) frameRenderer.resumeRendering()
     }
 
     override fun vlcjFrameInit() {
@@ -45,6 +57,7 @@ class LiveFrameController(
             controller.init()
             val videoSurface = frameRenderer.createVideoSurface()
             controller.player?.videoSurface()?.set(videoSurface)
+            frameRenderer.resumeRendering()
             released = false
         } catch (e: Exception) {
             log.error("直播视频表面初始化失败", e)
