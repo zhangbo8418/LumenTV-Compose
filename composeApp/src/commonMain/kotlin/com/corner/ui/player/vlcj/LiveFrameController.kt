@@ -7,8 +7,13 @@ import com.corner.ui.player.frame.FramePlayerController
 import com.corner.ui.player.frame.FrameRenderer
 import com.corner.ui.scene.SnackBar
 import com.corner.util.thisLogger
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.swing.Swing
+import uk.co.caprica.vlcj.player.embedded.videosurface.CallbackVideoSurface
+import javax.swing.SwingUtilities
 
 class LiveFrameController(
     private val controller: LiveVlcjController = LiveVlcjController(),
@@ -16,6 +21,9 @@ class LiveFrameController(
 ) : FramePlayerController, FrameRenderer, PlayerController by controller {
     private val log = thisLogger()
     private val frameRenderer = VlcjFrameRenderer(bitmapPool)
+
+    /** 与点播一致：强引用 CallbackVideoSurface，避免 JNA 回调被 GC */
+    private var videoSurface: CallbackVideoSurface? = null
 
     override fun peekVideoFrame() = frameRenderer.peekVideoFrame()
 
@@ -47,21 +55,54 @@ class LiveFrameController(
     }
 
     private fun endChannelSwitch() {
-        if (!released) frameRenderer.resumeRendering()
+        if (!released) {
+            bindVideoSurfaceOnUi("endChannelSwitch")
+            frameRenderer.resumeRendering()
+        }
     }
 
     override fun vlcjFrameInit() {
         try {
+            if (controller.isPlayerInstanceReady() && !released) {
+                bindVideoSurfaceOnUi("rebind")
+                return
+            }
             val lifecycleManager = PlayerLifecycleManager(controller)
             controller.setLifecycleManager(lifecycleManager)
+            // 必须在 Swing 线程绑表面：后台线程 set(null)/set(surface) 会导致后续「有声无画」
+            controller.onBeforePrepare = {
+                if (!released) {
+                    bindVideoSurfaceOnUi("beforePrepare")
+                    frameRenderer.resumeRendering()
+                }
+            }
             controller.init()
-            val videoSurface = frameRenderer.createVideoSurface()
-            controller.player?.videoSurface()?.set(videoSurface)
-            frameRenderer.resumeRendering()
+            bindVideoSurfaceOnUi("init")
             released = false
         } catch (e: Exception) {
             log.error("直播视频表面初始化失败", e)
             SnackBar.postMsg("直播播放器初始化失败", type = SnackBar.MessageType.ERROR)
+        }
+    }
+
+    private fun bindVideoSurfaceOnUi(reason: String) {
+        val bind = {
+            if (videoSurface == null) {
+                videoSurface = frameRenderer.createVideoSurface()
+            }
+            val surface = videoSurface
+            val player = controller.player
+            if (surface != null && player != null) {
+                // 不要 set(null)：在非主线程摘表面会弄断 callback，后续 HEVC 只剩音频
+                runCatching { player.videoSurface()?.set(surface) }
+                    .onFailure { log.warn("绑定视频表面失败 ({}): {}", reason, it.message) }
+                frameRenderer.resumeRendering()
+            }
+        }
+        if (SwingUtilities.isEventDispatchThread()) {
+            bind()
+        } else {
+            runBlocking(Dispatchers.Swing) { bind() }
         }
     }
 
@@ -79,6 +120,7 @@ class LiveFrameController(
                 bitmapPool.close()
                 controller.player?.controls()?.stop()
                 controller.player?.videoSurface()?.set(null)
+                videoSurface = null
                 Thread.sleep(100)
                 controller.dispose()
                 controller.player = null

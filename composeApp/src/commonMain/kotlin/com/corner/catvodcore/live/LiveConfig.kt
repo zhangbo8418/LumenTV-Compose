@@ -165,22 +165,23 @@ object LiveParser {
                     Regex("""tvg-chno="([^"]*)"""").find(line)?.groupValues?.getOrNull(1)?.let {
                         currentChannel?.number = it
                     }
+                    // 对齐 TV：EXTINF 内嵌 http-user-agent="..."
+                    Regex("""(?i)http-user-agent="([^"]*)"""").find(line)?.groupValues?.getOrNull(1)?.let {
+                        if (it.isNotBlank()) currentChannel?.ua = it
+                    }
                     val lineCatchup = readCatchup(line, Catchup())
                     currentChannel?.catchup = Catchup.decide(lineCatchup, globalCatchup)
                 }
                 !line.startsWith("#") && line.contains("://") -> {
-                    val parts = line.split("|")
+                    val parts = line.split("|", limit = 2)
                     val streamUrl = parts[0].trim()
                     val channel = currentChannel ?: run {
-                        // 容错：URL 出现在 EXTINF 之前时归入默认分组
                         val group = currentGroup ?: live.findGroup("默认").also { currentGroup = it }
                         group.findChannel("未命名").also { currentChannel = it }
                     }
                     channel.urls.add(streamUrl)
-                    if (parts.size > 1) {
-                        setting.readPipe(parts.drop(1).joinToString("|"))
-                        setting.copyTo(channel)
-                    }
+                    if (parts.size > 1) setting.applyPipeHeaders(parts[1])
+                    setting.copyTo(channel)
                     setting.clear()
                 }
             }
@@ -194,9 +195,9 @@ object LiveParser {
         var currentGroup: LiveGroup? = null
         val setting = LiveLineSetting()
         text.replace("\r\n", "\n").replace("\r", "").lines().forEach { line ->
+            // 对齐 TV：setting 行与频道行可同时处理；仅 #genre# 时 clear
             if (setting.matches(line)) {
                 setting.apply(line)
-                return@forEach
             }
             if (line.contains("#genre#")) {
                 setting.clear()
@@ -207,16 +208,17 @@ object LiveParser {
             if (split.size == 2 && split[1].contains("://")) {
                 if (currentGroup == null) currentGroup = live.findGroup("默认")
                 val channel = currentGroup!!.findChannel(split[0].trim())
+                // 对齐 TV：多线 # 分隔；线内 | 后为 header（用 & 分隔 key=value）
                 split[1].split("#").forEach { urlPart ->
                     val parts = urlPart.split("|", limit = 2)
                     val url = parts[0].trim()
                     if (url.contains("://")) {
+                        if (parts.size > 1) setting.applyPipeHeaders(parts[1])
                         channel.urls.add(url)
-                        if (parts.size > 1) setting.readPipe(parts[1])
                         setting.copyTo(channel)
                     }
                 }
-                setting.clear()
+                // 注意：TV txt 换台后不 clear setting，分组内后续频道可继承 ua/referer
             }
         }
     }
@@ -251,32 +253,81 @@ object LiveParser {
         private val header = mutableMapOf<String, String>()
 
         fun matches(line: String): Boolean {
-            return line.startsWith("ua") || line.startsWith("parse") || line.startsWith("referer")
-                || line.startsWith("origin") || line.startsWith("header") || line.startsWith("#EXTHTTP:")
+            return line.startsWith("ua") || line.startsWith("parse") || line.startsWith("click")
+                || line.startsWith("referer") || line.startsWith("origin") || line.startsWith("header")
+                || line.startsWith("format") || line.startsWith("forceKey")
+                || line.startsWith("#EXTHTTP:") || line.startsWith("#EXTVLCOPT:") || line.startsWith("#KODIPROP:")
         }
 
         fun apply(line: String) {
             when {
-                line.contains("ua=") -> ua = line.substringAfter("ua=").trim().trim('"')
-                line.contains("user-agent=") -> ua = line.substringAfter("user-agent=", "").substringAfter("user-agent=", "").trim().trim('"')
-                line.startsWith("parse") -> parse = line.substringAfter("parse=").trim().toIntOrNull()
-                line.startsWith("referer") -> referer = line.substringAfter("referer=").trim().trim('"')
-                line.startsWith("origin") -> origin = line.substringAfter("origin=").trim().trim('"')
+                line.startsWith("#EXTVLCOPT:", ignoreCase = true) -> applyExtVlcOpt(line)
+                line.startsWith("#KODIPROP:", ignoreCase = true) &&
+                    (line.contains("stream_headers", ignoreCase = true)
+                        || line.contains("common_headers", ignoreCase = true)) -> {
+                    val idx = line.indexOf("headers=", ignoreCase = true)
+                    if (idx >= 0) parseAmpHeaders(line.substring(idx + "headers=".length).trim())
+                }
                 line.contains("#EXTHTTP:") -> readHeaderJson(line.substringAfter("#EXTHTTP:").trim())
                 line.contains("header=") -> readHeaderJson(line.substringAfter("header=").trim())
+                line.contains("ua=") -> ua = line.substringAfter("ua=").trim().trim('"')
+                lowerContains(line, "user-agent=") ->
+                    ua = afterIgnoreCase(line, "user-agent=").trim().trim('"')
+                line.startsWith("parse") -> parse = line.substringAfter("parse=").trim().toIntOrNull()
+                line.startsWith("referer") ->
+                    referer = afterIgnoreCase(line, "referer=").trim().trim('"')
+                line.startsWith("origin") ->
+                    origin = afterIgnoreCase(line, "origin=").trim().trim('"')
             }
         }
 
-        fun readPipe(pipe: String) {
-            pipe.split("|").forEach { part ->
-                val piece = part.trim()
+        private fun applyExtVlcOpt(line: String) {
+            when {
+                lowerContains(line, "user-agent=") ->
+                    ua = afterIgnoreCase(line, "user-agent=").trim().trim('"')
+                lowerContains(line, "referrer=") ->
+                    referer = afterIgnoreCase(line, "referrer=").trim().trim('"')
+                lowerContains(line, "origin=") ->
+                    origin = afterIgnoreCase(line, "origin=").trim().trim('"')
+            }
+        }
+
+        fun applyPipeHeaders(pipe: String) {
+            // 对齐 TV Setting.headers(String)：
+            //   headers=a=1&b=2  |  a=1|b=2  |  a=1&b=2
+            val trimmed = pipe.trim()
+            when {
+                trimmed.contains("headers=", ignoreCase = true) -> {
+                    val idx = trimmed.indexOf("headers=", ignoreCase = true)
+                    parseAmpHeaders(trimmed.substring(idx + "headers=".length).trim())
+                }
+                trimmed.contains("|") -> trimmed.split("|").forEach { applyPipeHeaders(it) }
+                else -> parseAmpHeaders(trimmed)
+            }
+        }
+
+        private fun parseAmpHeaders(payload: String) {
+            payload.split("&").forEach { param ->
+                if (!param.contains("=")) return@forEach
+                val key = param.substringBefore("=").trim().trim('"')
+                val value = param.substringAfter("=").trim().trim('"')
+                if (key.isBlank() || value.isBlank()) return@forEach
                 when {
-                    piece.startsWith("ua=") -> ua = piece.substringAfter("ua=").trim()
-                    piece.startsWith("referer=") -> referer = piece.substringAfter("referer=").trim()
-                    piece.startsWith("origin=") -> origin = piece.substringAfter("origin=").trim()
-                    piece.startsWith("parse=") -> parse = piece.substringAfter("parse=").trim().toIntOrNull()
+                    key.equals("ua", ignoreCase = true) || key.equals("User-Agent", ignoreCase = true) -> ua = value
+                    key.equals("referer", ignoreCase = true) || key.equals("referrer", ignoreCase = true) -> referer = value
+                    key.equals("origin", ignoreCase = true) -> origin = value
+                    key.equals("parse", ignoreCase = true) -> parse = value.toIntOrNull()
+                    else -> header[key] = value
                 }
             }
+        }
+
+        private fun lowerContains(text: String, token: String): Boolean =
+            text.contains(token, ignoreCase = true)
+
+        private fun afterIgnoreCase(text: String, token: String): String {
+            val idx = text.indexOf(token, ignoreCase = true)
+            return if (idx >= 0) text.substring(idx + token.length) else ""
         }
 
         fun copyTo(channel: LiveChannel) {

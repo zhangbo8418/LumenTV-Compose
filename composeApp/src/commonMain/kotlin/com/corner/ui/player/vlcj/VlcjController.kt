@@ -5,6 +5,7 @@ import com.corner.util.settings.SettingStore
 import com.corner.catvodcore.bean.Vod
 import com.corner.catvodcore.viewmodel.GlobalAppState
 import com.corner.database.entity.History
+import com.corner.server.KtorD
 import com.corner.server.PlaybackMediaState
 import com.corner.ui.player.MediaInfo
 import com.corner.ui.player.PlayState
@@ -31,6 +32,8 @@ import uk.co.caprica.vlcj.player.base.MediaPlayer
 import uk.co.caprica.vlcj.player.base.MediaPlayerEventAdapter
 import uk.co.caprica.vlcj.player.base.State
 import uk.co.caprica.vlcj.player.embedded.EmbeddedMediaPlayer
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
@@ -655,12 +658,13 @@ class VlcjController : PlayerController {
         }
 
         val startPositionMs = resolveStartPositionMs()
-        log.info("engine.start 设置媒体：{} startMs={}", url, startPositionMs)
-        expectedMrl = url
+        val playUrl = wrapPlaybackUrlIfNeeded(url)
+        log.info("engine.start 设置媒体：{} startMs={}", playUrl.take(160), startPositionMs)
+        expectedMrl = playUrl
         loadStartedAtMs = System.currentTimeMillis()
         startTrafficMonitor()
         _state.update { it.copy(state = PlayState.BUFFERING, bufferProgression = 0f) }
-        val options = buildMediaOptions(url, startPositionMs).toTypedArray()
+        val options = buildMediaOptions(playUrl, startPositionMs).toTypedArray()
         playbackEnded.set(false)
         val nativeDone = AtomicBoolean(false)
         // 交给 VLC native 队列，立刻返回，避免阻塞换集
@@ -672,7 +676,7 @@ class VlcjController : PlayerController {
             }
             try {
                 // 对齐 TV：setMedia/prepare → play（vlcj prepare 即 changeMedia）
-                val prepared = playable.media().prepare(url, *options)
+                val prepared = playable.media().prepare(playUrl, *options)
                 if (!prepared) {
                     log.warn("media().prepare 返回 false")
                     synchronized(vlcStateLock) { playerLoading = false }
@@ -710,7 +714,7 @@ class VlcjController : PlayerController {
             retryPlayer.submit {
                 if (isLoadGenerationStale(generation)) return@submit
                 runCatching {
-                    if (retryPlayer.media().prepare(url, *options)) {
+                    if (retryPlayer.media().prepare(playUrl, *options)) {
                         retryPlayer.controls().play()
                         log.info("engine.start 重建后完成 generation={}", generation)
                     }
@@ -1110,24 +1114,48 @@ class VlcjController : PlayerController {
     private fun buildMediaOptions(url: String = "", startPositionMs: Long = 0L): List<String> {
         val options = mutableListOf<String>()
         val headers = PlaybackMediaState.headers
+        val viaLocalProxy = url.contains("/video/proxy")
         val userAgent = headers.entries.firstOrNull {
             it.key.equals("User-Agent", ignoreCase = true) || it.key.equals("ua", ignoreCase = true)
         }?.value ?: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0"
-        options.add("http-user-agent=$userAgent")
-        headers.entries.firstOrNull {
-            it.key.equals("Referer", ignoreCase = true) || it.key.equals("referer", ignoreCase = true)
-        }?.value?.takeIf { it.isNotBlank() }?.let { options.add("http-referrer=$it") }
-        headers.entries.firstOrNull { it.key.equals("Cookie", ignoreCase = true) }?.value
-            ?.takeIf { it.isNotBlank() }?.let { options.add("http-cookie=$it") }
+        options.add(":http-user-agent=$userAgent")
+        // Cookie 走本地代理注入；此处仅补 VLC 能稳定生效的 Referer
+        if (!viaLocalProxy) {
+            headers.entries.firstOrNull {
+                it.key.equals("Referer", ignoreCase = true) || it.key.equals("referer", ignoreCase = true)
+            }?.value?.takeIf { it.isNotBlank() }?.let { options.add(":http-referrer=$it") }
+        }
         val subtitle = activeSubtitleUrl.ifBlank { PlaybackMediaState.subtitleUrl }
         if (subtitle.isNotBlank()) {
             options.add(":sub-file=$subtitle")
         }
-        // 对齐 TV setMediaItem(position)；HLS 仍走 handleOpeningSeek，避免 :start-time 不稳
         if (startPositionMs > 1_000L && url.isNotBlank() && !isHlsMrl(url) && !isStreamingUrl(url)) {
             options.add(":start-time=${startPositionMs / 1000.0}")
         }
         return options
+    }
+
+    /** 含 Cookie 时走本地 /video/proxy（内嵌 VLC 无法可靠发送 Cookie） */
+    private fun wrapPlaybackUrlIfNeeded(url: String): String {
+        if (url.isBlank() || url.contains("/video/proxy") ||
+            url.contains("127.0.0.1") || url.contains("localhost")
+        ) {
+            return url
+        }
+        val cookie = PlaybackMediaState.headers.entries
+            .firstOrNull { it.key.equals("Cookie", ignoreCase = true) }
+            ?.value
+            ?.takeIf { it.isNotBlank() }
+            ?: return url
+        return try {
+            val encoded = URLEncoder.encode(url, StandardCharsets.UTF_8)
+            "http://127.0.0.1:${KtorD.getPort()}/video/proxy?url=$encoded".also {
+                log.info("点播本地头代理 Cookie.len={}", cookie.length)
+            }
+        } catch (e: Exception) {
+            log.warn("构造本地头代理失败，直连原址: {}", e.message)
+            url
+        }
     }
 
     private fun syncPlaybackMediaState(mediaPlayer: MediaPlayer, playing: Boolean? = null) {

@@ -206,7 +206,7 @@ class LiveVlcjController : PlayerController {
         return this
     }
 
-    /** 换台/换线：先 pause 再 prepare，避免旧台音频拖尾；快速连切只保留最后一档 */
+    /** 换台/换线：先 stop 再 prepare（对齐 TV）；快速连切只保留最后一档 */
     fun switchChannel(
         url: String,
         headers: Map<String, String>,
@@ -215,14 +215,15 @@ class LiveVlcjController : PlayerController {
         val gen = switchGeneration.incrementAndGet()
         switchJob?.cancel()
         switchJob = controllerScope.launch {
-            runCatching { player?.controls()?.setPause(true) }
+            runCatching { player?.controls()?.stop() }
             try {
+                // stop 后偶发丢失 callback 绑定，起播前再绑一次
+                onBeforePrepare?.invoke()
                 loadURL(url, 10000, headers)
                 if (gen != switchGeneration.get() || !isActive) return@launch
+                // 先恢复渲染再 play，避免首帧在 pause 窗口被丢掉
+                onSwitched?.invoke()
                 catch { player?.controls()?.play() }
-                if (gen == switchGeneration.get()) {
-                    onSwitched?.invoke()
-                }
             } catch (_: CancellationException) {
                 // 被下一次换台取消
             } catch (e: Exception) {
@@ -235,6 +236,9 @@ class LiveVlcjController : PlayerController {
         return this
     }
 
+    /** 由 LiveFrameController 注入：重绑 surface / 恢复渲染 */
+    var onBeforePrepare: (() -> Unit)? = null
+
     override suspend fun loadURL(url: String, timeoutMillis: Long): PlayerController =
         loadURL(url, timeoutMillis, emptyMap())
 
@@ -246,8 +250,9 @@ class LiveVlcjController : PlayerController {
         }
         try {
             playerLoading = true
-            runCatching { player?.controls()?.setPause(true) }
+            runCatching { player?.controls()?.stop() }
             val optionsList = buildVlcOptions(headers)
+            log.info("直播起播 url={}", url.take(160))
             player?.media()?.prepare(url, *optionsList.toTypedArray())
         } catch (e: Exception) {
             playerLoading = false
@@ -258,18 +263,19 @@ class LiveVlcjController : PlayerController {
     }
 
     private fun buildVlcOptions(headers: Map<String, String>): List<String> {
-        val options = mutableListOf(
-            "http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0"
-        )
-        headers["User-Agent"]?.takeIf { it.isNotBlank() }?.let {
-            options[0] = "http-user-agent=$it"
+        fun header(vararg names: String): String? =
+            headers.entries.firstOrNull { e -> names.any { e.key.equals(it, ignoreCase = true) } }
+                ?.value?.takeIf { it.isNotBlank() }
+
+        // 媒体选项加冒号前缀，确保作为 media option 生效
+        val ua = header("User-Agent", "ua")
+            ?.takeUnless { it.contains("okhttp", ignoreCase = true) }
+            ?: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0"
+        val options = mutableListOf(":http-user-agent=$ua")
+        (header("Referer", "referer") ?: header("Origin"))?.let {
+            options.add(":http-referrer=$it")
         }
-        headers["Referer"]?.takeIf { it.isNotBlank() }?.let {
-            options.add("http-referrer=$it")
-        }
-        headers["Cookie"]?.takeIf { it.isNotBlank() }?.let {
-            options.add(":http-cookies=$it")
-        }
+        header("Cookie")?.let { options.add(":http-cookies=$it") }
         return options
     }
 

@@ -64,6 +64,104 @@ class VlcjFrameRenderer(
 
     private val bitmapSwapLock = Any()
 
+    /**
+     * JNA 原生线程会回调这些对象：必须作为字段强引用，
+     * 否则换台/GC 后出现 “callback object has been garbage collected”。
+     */
+    private var lastPoolSize = -1
+    private var lastWidth = -1
+    private var lastHeight = -1
+
+    private val bufferFormatCallback = object : BufferFormatCallback {
+        private fun estimateFrameRate(width: Int, height: Int): Int {
+            val pixels = width * height
+            return when {
+                pixels >= 3_000_000 -> 60
+                pixels >= 1_000_000 -> 30
+                else -> 24
+            }
+        }
+
+        private fun adjustBitmapPoolSize(width: Int, height: Int) {
+            if (width == lastWidth && height == lastHeight) return
+            val resolutionFactor = (width * height) / 1_000_000f
+            val frameRate = estimateFrameRate(width, height)
+            val poolSize = (frameRate * resolutionFactor).roundToInt().coerceIn(2, 12)
+            if (poolSize != lastPoolSize) {
+                bitmapPool.setMaxSize(poolSize)
+                log.info("根据 ${frameRate}fps @ ${width}x$height，调整 BitmapPool 大小为 $poolSize")
+                lastPoolSize = poolSize
+            }
+            lastWidth = width
+            lastHeight = height
+        }
+
+        override fun getBufferFormat(sourceWidth: Int, sourceHeight: Int): BufferFormat {
+            info = ImageInfo.makeN32(sourceWidth, sourceHeight, ColorAlphaType.OPAQUE)
+            adjustBitmapPoolSize(width = sourceWidth, height = sourceHeight)
+            return RV32BufferFormat(sourceWidth, sourceHeight)
+        }
+
+        override fun newFormatSize(bufferWidth: Int, bufferHeight: Int, displayWidth: Int, displayHeight: Int) {
+        }
+
+        override fun allocatedBuffers(buffers: Array<out ByteBuffer>) {
+            byteArray = ByteArray(buffers[0].limit())
+        }
+    }
+
+    private val renderCallback = object : RenderCallback {
+        override fun lock(mediaPlayer: MediaPlayer?) {
+        }
+
+        override fun display(
+            mediaPlayer: MediaPlayer,
+            nativeBuffers: Array<out ByteBuffer>,
+            bufferFormat: BufferFormat,
+            displayWidth: Int,
+            displayHeight: Int
+        ) {
+            if (isReleased || !renderEnabled) return
+            try {
+                val width = bufferFormat.width
+                val height = bufferFormat.height
+                val byteBuffer = nativeBuffers[0]
+                val pixels = byteArray
+                if (byteBuffer.limit() <= 0 || pixels == null) return
+
+                byteBuffer.get(pixels)
+                byteBuffer.rewind()
+
+                if (isReleased || !renderEnabled) return
+
+                synchronized(bitmapSwapLock) {
+                    if (isReleased || !renderEnabled) return
+                    if (inFlightBitmaps.size >= maxInFlight) return
+                    val epoch = publishEpoch
+                    val bmp = bitmapPool.acquire(width, height)
+                    bmp.installPixels(pixels)
+                    currentBitmap?.let { inFlightBitmaps.addLast(it) }
+                    currentBitmap = bmp
+                    if (!bmp.isClosed) {
+                        latestFrame.set(PublishedFrame(bmp.asComposeImageBitmap(), bmp, epoch))
+                    }
+                }
+            } catch (e: Exception) {
+                log.error("渲染帧时发生错误", e)
+                latestFrame.set(null)
+                synchronized(bitmapSwapLock) {
+                    currentBitmap = null
+                }
+            }
+        }
+
+        override fun unlock(mediaPlayer: MediaPlayer?) {
+        }
+    }
+
+    @Volatile
+    private var videoSurface: CallbackVideoSurface? = null
+
     fun isReleased(): Boolean = isReleased
 
     /**
@@ -104,99 +202,13 @@ class VlcjFrameRenderer(
     }
 
     fun createVideoSurface(): CallbackVideoSurface {
+        videoSurface?.let { return it }
         return CallbackVideoSurface(
-            object : BufferFormatCallback {
-                private var lastPoolSize = -1
-                private var lastWidth = -1
-                private var lastHeight = -1
-
-                private fun estimateFrameRate(width: Int, height: Int): Int {
-                    val pixels = width * height
-                    return when {
-                        pixels >= 3_000_000 -> 60
-                        pixels >= 1_000_000 -> 30
-                        else -> 24
-                    }
-                }
-
-                private fun adjustBitmapPoolSize(width: Int, height: Int) {
-                    if (width == lastWidth && height == lastHeight) return
-                    val resolutionFactor = (width * height) / 1_000_000f
-                    val frameRate = estimateFrameRate(width, height)
-                    val poolSize = (frameRate * resolutionFactor).roundToInt().coerceIn(2, 12)
-                    if (poolSize != lastPoolSize) {
-                        bitmapPool.setMaxSize(poolSize)
-                        log.info("根据 ${frameRate}fps @ ${width}x$height，调整 BitmapPool 大小为 $poolSize")
-                        lastPoolSize = poolSize
-                    }
-                    lastWidth = width
-                    lastHeight = height
-                }
-
-                override fun getBufferFormat(sourceWidth: Int, sourceHeight: Int): BufferFormat {
-                    info = ImageInfo.makeN32(sourceWidth, sourceHeight, ColorAlphaType.OPAQUE)
-                    adjustBitmapPoolSize(width = sourceWidth, height = sourceHeight)
-                    return RV32BufferFormat(sourceWidth, sourceHeight)
-                }
-
-                override fun newFormatSize(bufferWidth: Int, bufferHeight: Int, displayWidth: Int, displayHeight: Int) {
-                }
-
-                override fun allocatedBuffers(buffers: Array<out ByteBuffer>) {
-                    byteArray = ByteArray(buffers[0].limit())
-                }
-            },
-            object : RenderCallback {
-                override fun lock(mediaPlayer: MediaPlayer?) {
-                }
-
-                override fun display(
-                    mediaPlayer: MediaPlayer,
-                    nativeBuffers: Array<out ByteBuffer>,
-                    bufferFormat: BufferFormat,
-                    displayWidth: Int,
-                    displayHeight: Int
-                ) {
-                    if (isReleased || !renderEnabled) return
-                    try {
-                        val width = bufferFormat.width
-                        val height = bufferFormat.height
-                        val byteBuffer = nativeBuffers[0]
-                        val pixels = byteArray
-                        if (byteBuffer.limit() <= 0 || pixels == null) return
-
-                        byteBuffer.get(pixels)
-                        byteBuffer.rewind()
-
-                        if (isReleased || !renderEnabled) return
-
-                        synchronized(bitmapSwapLock) {
-                            if (isReleased || !renderEnabled) return
-                            if (inFlightBitmaps.size >= maxInFlight) return
-                            val epoch = publishEpoch
-                            val bmp = bitmapPool.acquire(width, height)
-                            bmp.installPixels(pixels)
-                            currentBitmap?.let { inFlightBitmaps.addLast(it) }
-                            currentBitmap = bmp
-                            if (!bmp.isClosed) {
-                                latestFrame.set(PublishedFrame(bmp.asComposeImageBitmap(), bmp, epoch))
-                            }
-                        }
-                    } catch (e: Exception) {
-                        log.error("渲染帧时发生错误", e)
-                        latestFrame.set(null)
-                        synchronized(bitmapSwapLock) {
-                            currentBitmap = null
-                        }
-                    }
-                }
-
-                override fun unlock(mediaPlayer: MediaPlayer?) {
-                }
-            },
+            bufferFormatCallback,
+            renderCallback,
             true,
             VideoSurfaceAdapters.getVideoSurfaceAdapter()
-        )
+        ).also { videoSurface = it }
     }
 
     fun pauseRendering() {
@@ -258,6 +270,7 @@ class VlcjFrameRenderer(
             bitmapPool.clear()
             byteArray = null
             info = null
+            videoSurface = null
             log.debug("=====帧渲染器资源释放成功=====")
         } catch (e: Throwable) {
             log.error("释放帧渲染器资源时出错：", e)

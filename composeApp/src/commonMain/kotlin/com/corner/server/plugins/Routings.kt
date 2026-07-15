@@ -452,79 +452,82 @@ fun Application.configureRouting() {
             val client = createDefaultOkHttpClient()
 
             try {
-                val requestBuilder = Request.Builder()
-                    .url(url)
-                    // 添加常见的视频请求头
-                    .addHeader(
-                        "User-Agent",
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    )
-                    .addHeader("Accept", "*/*")
-                    .addHeader("Connection", "keep-alive")
-                    .addHeader("Accept-Encoding", "gzip, deflate, br")
-                    .addHeader("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+                fun buildUpstreamRequest(withRange: Boolean): Request {
+                    val requestBuilder = Request.Builder()
+                        .url(url)
+                        .header("Accept", "*/*")
+                        .header("Connection", "keep-alive")
+                        .header(
+                            "User-Agent",
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        )
 
-                // 转发客户端的重要请求头
-                call.request.headers["Range"]?.let { range ->
-                    requestBuilder.addHeader("Range", range)
-                }
-                call.request.headers["Referer"]?.let { referer ->
-                    requestBuilder.addHeader("Referer", referer)
-                }
-                call.request.headers["Origin"]?.let { origin ->
-                    requestBuilder.addHeader("Origin", origin)
+                    // Cookie/Referer/UA 等由 OkHttp 注入（内嵌 VLC 不可靠）
+                    PlaybackMediaState.headers.forEach { (key, value) ->
+                        if (key.isBlank() || value.isBlank()) return@forEach
+                        if (key.equals("Accept-Encoding", ignoreCase = true)) return@forEach
+                        if (key.equals("Range", ignoreCase = true)) return@forEach
+                        requestBuilder.header(key, value)
+                    }
+                    // 站点头之后再固定：避免 gzip 导致长度与实体不一致
+                    requestBuilder.header("Accept-Encoding", "identity")
+
+                    if (withRange) {
+                        call.request.headers[HttpHeaders.Range]?.takeIf { it.isNotBlank() }?.let {
+                            requestBuilder.header(HttpHeaders.Range, it)
+                        }
+                    }
+                    return requestBuilder.build()
                 }
 
-                val response = client.newCall(requestBuilder.build()).execute()
+                val clientRange = call.request.headers[HttpHeaders.Range]
+                var response = client.newCall(buildUpstreamRequest(withRange = true)).execute()
+                // VLC 探长/拖动偶发 Range 不被 CDN 接受 → 416；去掉 Range 再拉整段
+                if (response.code == HttpStatusCode.RequestedRangeNotSatisfiable.value && !clientRange.isNullOrBlank()) {
+                    log.debug("上游 416，去掉 Range 重试 url={}", url.take(120))
+                    response.close()
+                    response = client.newCall(buildUpstreamRequest(withRange = false)).execute()
+                }
 
-                // 检查响应状态
-                if (!response.isSuccessful && response.code != HttpStatusCode.PartialContent.value) {
+                if (!response.isSuccessful) {
                     val errorMsg = "上游服务器错误: ${response.code} ${response.message}"
-                    log.warn("视频代理请求失败: URL=$url, Status=${response.code}")
+                    log.warn("视频代理失败: {} -> {}", response.code, url.take(120))
                     response.close()
                     call.respond(HttpStatusCode.BadGateway, errorMsg)
                     return@get
                 }
 
-                // 转发重要的响应头
+                val skipHeaders = setOf(
+                    "transfer-encoding", "connection", "content-encoding",
+                    "access-control-allow-origin", "access-control-allow-methods",
+                    "access-control-allow-headers",
+                )
                 response.headers.names().forEach { name ->
+                    if (HttpHeaders.isUnsafe(name) || name.lowercase() in skipHeaders) return@forEach
                     val values = response.headers(name)
-                    if (!HttpHeaders.isUnsafe(name) &&
-                        name != "Transfer-Encoding" &&
-                        name != "Connection" &&
-                        name.lowercase() !in listOf(
-                            "access-control-allow-origin",
-                            "access-control-allow-methods",
-                            "access-control-allow-headers"
-                        )
-                    ) {
-                        val value = if (values.size == 1) values[0] else values.joinToString(", ")
-                        call.response.headers.append(name, value)
-                    }
+                    val value = if (values.size == 1) values[0] else values.joinToString(", ")
+                    call.response.headers.append(name, value)
+                }
+                if (call.response.headers[HttpHeaders.AcceptRanges].isNullOrBlank()) {
+                    call.response.headers.append(HttpHeaders.AcceptRanges, "bytes")
                 }
 
-                // 特别处理m3u8和视频内容类型
                 val contentType = when {
                     response.header("Content-Type")?.contains("m3u8") == true ->
                         ContentType.parse("application/vnd.apple.mpegurl")
-
                     response.header("Content-Type")?.contains("mpegurl") == true ->
                         ContentType.parse("application/vnd.apple.mpegurl")
-
                     response.header("Content-Type")?.contains("video") == true ->
                         response.header("Content-Type")?.let { ContentType.parse(it) }
                             ?: ContentType.Video.MPEG
-
                     else ->
                         response.header("Content-Type")?.let { ContentType.parse(it) }
                             ?: ContentType.Application.OctetStream
                 }
 
-                // 设置正确的状态码
                 val statusCode = when {
                     response.code == HttpStatusCode.PartialContent.value -> HttpStatusCode.PartialContent
-                    response.isSuccessful -> HttpStatusCode.OK
-                    else -> HttpStatusCode.fromValue(response.code)
+                    else -> HttpStatusCode.OK
                 }
 
                 call.respondOutputStream(
