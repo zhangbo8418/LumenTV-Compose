@@ -83,6 +83,31 @@ SRC="$WORK/src/wrapper-java"
 BUILD="$WORK/build"
 mkdir -p "$BUILD"
 
+# 修复上游跨堆释放 bug：jsModuleNormalizeFunc 把 GetStringUTFChars 的返回值（JVM 堆）
+# 直接交给 quickjs 用 js_free 释放。Windows/MSVCRT 下必崩；此处同步修掉以保证行为一致。
+WRAPPER_CPP="$WORK/src/native/cpp/quickjs_wrapper.cpp"
+python3 - "$WRAPPER_CPP" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    text = f.read()
+
+anchor = "auto ret = (char *) env->GetStringUTFChars((jstring) result, nullptr);"
+fix = (
+    "const char *utf_ret = env->GetStringUTFChars((jstring) result, nullptr);\n"
+    '    char *ret = js_strdup(ctx, utf_ret == nullptr ? "" : utf_ret);\n'
+    "    if (utf_ret != nullptr) env->ReleaseStringUTFChars((jstring) result, utf_ret);"
+)
+
+if anchor in text:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text.replace(anchor, fix))
+    print("==> Patched jsModuleNormalizeFunc cross-heap free (js_strdup)")
+elif "js_strdup(ctx, utf_ret" not in text:
+    sys.exit("quickjs_wrapper.cpp patch anchor not found; upstream changed, review jsModuleNormalizeFunc")
+PYEOF
+
 CMAKE_ARGS=(
   -DCMAKE_BUILD_TYPE=Release
   -S "$SRC/src/main"

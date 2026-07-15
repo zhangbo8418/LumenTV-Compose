@@ -159,7 +159,19 @@ public class Spider {
 
             @Override
             public byte[] getModuleBytecode(String moduleName) {
-                return ctx.compileModule(Module.get().fetch(moduleName), moduleName);
+                // 失败时返回 null 而不是抛异常：异常穿透 JNI 模块回调会让原生层在
+                // 挂起异常状态下继续执行，属未定义行为。返回 null 由原生层抛干净的 QuickJSException。
+                try {
+                    String content = Module.get().fetch(moduleName);
+                    if (content == null || content.isEmpty()) {
+                        System.err.println("[quickjs] 模块内容为空（网络拉取失败？）: " + moduleName);
+                        return null;
+                    }
+                    return ctx.compileModule(content, moduleName);
+                } catch (Throwable e) {
+                    System.err.println("[quickjs] 模块编译失败: " + moduleName + " -> " + e.getMessage());
+                    return null;
+                }
             }
         });
     }

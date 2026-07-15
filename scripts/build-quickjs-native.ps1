@@ -64,6 +64,25 @@ try {
         Set-Content -Path $CmakeLists -Value $cmakeText -NoNewline
     }
 
+    # 修复上游跨堆释放 bug：jsModuleNormalizeFunc 把 GetStringUTFChars 的返回值（JVM/UCRT 堆）
+    # 直接交给 quickjs，quickjs 会用 js_free（本 DLL 链接的 msvcrt 堆）释放它。
+    # MSVCRT 工具链下两个堆不同，JS import 模块时必在 ntdll RtlFreeHeap 崩溃
+    # （EXCEPTION_ACCESS_VIOLATION，写入地址为字符串垃圾指针）。改为 js_strdup 复制后正确归还。
+    $WrapperCpp = Join-Path $SrcRoot "native/cpp/quickjs_wrapper.cpp"
+    $cppText = Get-Content -Raw $WrapperCpp
+    $normalizeAnchor = 'auto ret = (char *) env->GetStringUTFChars((jstring) result, nullptr);'
+    $normalizeFix = @'
+const char *utf_ret = env->GetStringUTFChars((jstring) result, nullptr);
+    char *ret = js_strdup(ctx, utf_ret == nullptr ? "" : utf_ret);
+    if (utf_ret != nullptr) env->ReleaseStringUTFChars((jstring) result, utf_ret);
+'@
+    if ($cppText.Contains($normalizeAnchor)) {
+        Set-Content -Path $WrapperCpp -Value ($cppText.Replace($normalizeAnchor, $normalizeFix)) -NoNewline
+        Write-Host "==> Patched jsModuleNormalizeFunc cross-heap free (js_strdup)"
+    } elseif (-not $cppText.Contains("js_strdup(ctx, utf_ret")) {
+        throw "quickjs_wrapper.cpp patch anchor not found; upstream changed, review jsModuleNormalizeFunc"
+    }
+
     $Build = Join-Path $Work "build"
     New-Item -ItemType Directory -Force -Path $Build | Out-Null
 
