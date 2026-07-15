@@ -23,7 +23,9 @@ data class Site(
     var style: Style? = null,
     var timeout: Int? = null,
     var jar: String? = null,
-    var header: Map<String, String> = mutableMapOf()
+    var header: Map<String, String> = mutableMapOf(),
+    /** 对齐 TV Site.click：页面加载后注入的点击脚本 */
+    var click: String? = null,
 ) {
     @Transient
     var id:Int = 0

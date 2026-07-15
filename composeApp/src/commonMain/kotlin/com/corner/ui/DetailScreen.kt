@@ -66,12 +66,9 @@ import com.corner.util.net.Utils
 import com.corner.catvodcore.viewmodel.GlobalAppState.hideProgress
 import com.corner.catvodcore.viewmodel.GlobalAppState.showProgress
 import com.corner.ui.nav.data.DetailScreenState
-import com.corner.ui.nav.data.DialogState
-import com.corner.ui.nav.data.DialogState.openDialogState
 import com.corner.ui.nav.vm.DetailViewModel
 import com.corner.ui.scene.*
 import com.corner.ui.video.QuickSearchItem
-import com.corner.util.play.BrowserUtils
 import com.corner.util.core.Constants
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -126,29 +123,7 @@ fun WindowScope.DetailScene(vm: DetailViewModel, onClickBack: () -> Unit) {
         }
     }
 
-    var showWebSocketDisconnected by remember { mutableStateOf(false) }
-    var localShowPngDialog by remember { mutableStateOf(DialogState.showPngDialog) }
-    var localCurrentM3U8Url by remember { mutableStateOf(DialogState.currentM3U8Url) }
     val mrl = derivedStateOf { model.currentPlayUrl } //监听播放地址
-    // 监听 DialogState 中的状态变化
-    LaunchedEffect(DialogState.showPngDialog, DialogState.currentM3U8Url) {
-        localShowPngDialog = DialogState.showPngDialog
-        localCurrentM3U8Url = DialogState.currentM3U8Url
-    }
-
-    // WebSocket 仅用于 Web 播放器；初始 false ≠ 断连，避免进详情就刷「链接丢失」
-    LaunchedEffect(BrowserUtils.webSocketConnectionState) {
-        var everConnected = false
-        BrowserUtils.webSocketConnectionState.collect { isConnected ->
-            if (isConnected) {
-                everConnected = true
-                showWebSocketDisconnected = false
-            } else if (everConnected) {
-                showWebSocketDisconnected = true
-                log.info("WebSocket链接丢失")
-            }
-        }
-    }
 
     DisposableEffect(Unit) {
         //进入界面时加载数据
@@ -159,9 +134,6 @@ fun WindowScope.DetailScene(vm: DetailViewModel, onClickBack: () -> Unit) {
             if (!GlobalAppState.closeApp.value) {
                 // 离开详情：clear 必须非阻塞（禁止在 Composition dispose 里 sync libvlc）
                 vm.clear(unbindHost = true)
-                if (localShowPngDialog) {
-                    BrowserUtils.cleanup()
-                }
             }
         }
     }
@@ -264,82 +236,26 @@ fun WindowScope.DetailScene(vm: DetailViewModel, onClickBack: () -> Unit) {
                 }
             }
 
-            TopNotification(
-                show = showWebSocketDisconnected && vm.vmPlayerType.first() == PlayerType.Web.id
-                        || showWebSocketDisconnected && openDialogState,
-                vm = vm,
-                scope = scope,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)
-            )
-
             Row(
                 modifier = Modifier.fillMaxHeight(videoHeight.value)
                     .padding(start = if (isFullScreen.value) 0.dp else 16.dp),//全屏取消左侧缩进
                 horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                if (localShowPngDialog /*&& !DialogState.userChoseOpenInBrowser*/) {
-                    // 检测是否为磁力链接
-                    val isMagnetLink = localCurrentM3U8Url.startsWith("magnet:", ignoreCase = true)
-                    val dialogText = if (isMagnetLink) {
-                        "检测到磁力链接，是否使用 Web 播放器播放？\n（Web 播放器支持边下载边播放）"
-                    } else {
-                        "在当前播放的m3u8文件中，检测到了特殊链接，是否跳转到浏览器播放？"
-                    }
-
-                    PngFoundDialog(
-                        m3u8Url = localCurrentM3U8Url,
-                        text = dialogText,
-                        onDismiss = {
-                            localShowPngDialog = false
-                            DialogState.dismissPngDialog()
-                        },
-                        onOpenInBrowser = {
-                            // 获取当前选中的剧集
-                            val currentEpisode = model.detail.subEpisode.find { it.activated }
-                            val episodeName = model.detail.vodName ?: ""
-                            val episodeNumber = currentEpisode?.number ?: 0
-                            log.debug("Name is {},Number is {}", episodeName, episodeNumber)
-                            BrowserUtils.openBrowserWithWebPlayer(localCurrentM3U8Url, episodeName, episodeNumber)
-                            localShowPngDialog = false
-                            DialogState.dismissPngDialog()
-                        },
-                        vm
-                    )
-                }
-
                 if (internalPlayer.value) {
-                    if (!DialogState.userChoseOpenInBrowser) {
-                        if (!openDialogState && !vm.isDownloadUrl.value) {
-                            Player(
-                                mrl.value,
-                                controller.value,
-                                Modifier
-                                    .fillMaxWidth(videoWidth.value)
-                                    .focusable()
-                                    .focusRequester(focus),
-                                vm,
-                                focusRequester = focus
-                            )
-                        } else if (vm.isDownloadUrl.value) {
-                            NoPlayerContent(
-                                message = "下载链接，无法播放", subtitle = "可选择下载",
-                                videoWidth = videoWidth,
-                                focus = focus,
-                                scope = scope,
-                                vm = vm
-                            )
-                        } else {
-                            NoPlayerContent(
-                                message = "需要使用 Web 播放器播放", subtitle = "请使用 Web 播放器",
-                                videoWidth = videoWidth,
-                                focus = focus,
-                                scope = scope,
-                                vm = vm
-                            )
-                        }
+                    if (!vm.isDownloadUrl.value) {
+                        Player(
+                            mrl.value,
+                            controller.value,
+                            Modifier
+                                .fillMaxWidth(videoWidth.value)
+                                .focusable()
+                                .focusRequester(focus),
+                            vm,
+                            focusRequester = focus
+                        )
                     } else {
                         NoPlayerContent(
-                            message = "正在 Web 播放器中播放", subtitle = "请使用 Web 播放器",
+                            message = "下载链接，无法播放", subtitle = "可选择下载",
                             videoWidth = videoWidth,
                             focus = focus,
                             scope = scope,
@@ -1082,7 +998,6 @@ fun EpChooser(vm: DetailViewModel, modifier: Modifier) {
                     uriHandler.openUri(url)
                 }
                 onUserSelectEpisode()
-                DialogState.resetBrowserChoice()
             },
             modifier = Modifier.fillMaxWidth()
         )
@@ -1292,56 +1207,6 @@ fun EpisodeTitleRow(
                 style = MaterialTheme.typography.bodyMedium.copy(
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                 )
-            )
-        }
-    }
-}
-
-/**
- * 顶部提示
- * @param show 是否显示
- * @param vm 视图模型
- * @param scope 作用域
- * @param modifier 修饰符
- */
-@Composable
-fun TopNotification(
-    show: Boolean,
-    vm: DetailViewModel,
-    scope: CoroutineScope,
-    modifier: Modifier = Modifier
-) {
-    if (show) {
-        Column(modifier = modifier) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .background(MaterialTheme.colorScheme.primary)
-                    .padding(start = 16.dp, end = 16.dp),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "WebSocket连接已断开，如果想播放视频请使用Web播放器",
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-            }
-
-            TopEmptyShow(
-                title = "当前播放器无法播放",
-                subtitle = "请使用 Web 播放器；点击选集按钮重新进入浏览器播放，或点击刷新重试",
-                onRefresh = { scope.launch { vm.load() } },
-                modifier = Modifier
-                    .height(50.dp)
-                    .fillMaxWidth(),
-                showIcon = false
             )
         }
     }

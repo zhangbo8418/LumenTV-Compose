@@ -19,6 +19,7 @@ import org.cef.misc.BoolRef
 import org.cef.network.CefRequest
 import org.slf4j.LoggerFactory
 import java.awt.BorderLayout
+import java.awt.Toolkit
 import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -28,17 +29,20 @@ import javax.swing.SwingUtilities
 
 /**
  * 内嵌 Chromium 拦截请求，嗅探媒体地址。
- * 使用隐藏窗口模式（非 OSR），避免依赖 JOGL/gluegen_rt.dll。
+ * 对齐 TV CustomWebView：请求头、click/Sniffer 脚本、嵌套 player 嗅探、Cloudflare 人工验证。
  */
 object JcefWebViewSniffer {
     private val log = LoggerFactory.getLogger("JcefWebViewSniffer")
     private val playerPattern = Regex("player.*https?://", RegexOption.IGNORE_CASE)
+    private const val CHALLENGE_HINT = "/cdn-cgi/challenge-platform/"
 
     suspend fun parse(
         webUrl: String,
         headers: Map<String, String>,
         timeoutMs: Long = 15_000,
         parses: List<Parse>? = null,
+        click: String = "",
+        siteKey: String = "",
     ): String? {
         val items = parses ?: ApiConfig.api.parses.filter { it.type == 0 }
         if (items.isEmpty() || webUrl.isBlank()) return null
@@ -51,14 +55,29 @@ object JcefWebViewSniffer {
         return withContext(Dispatchers.IO) {
             for (item in items) {
                 if (item.url.isBlank()) continue
-                sniffOnce(item.url + webUrl, mergeHeaders(headers, item), timeoutMs, detectNested = true)
-                    ?.let { return@withContext it }
+                val startUrl = item.url + webUrl
+                val detectNested = !startUrl.contains("player/?url=")
+                sniffOnce(
+                    startUrl = startUrl,
+                    headers = mergeHeaders(headers, item),
+                    timeoutMs = timeoutMs,
+                    detectNested = detectNested,
+                    click = click,
+                    siteKey = siteKey,
+                )?.let { return@withContext it }
             }
             val jxs = items.joinToString(";") { it.url }
             val encodedJxs = URLEncoder.encode(jxs, StandardCharsets.UTF_8)
             val encodedUrl = URLEncoder.encode(webUrl, StandardCharsets.UTF_8)
             val parsePage = "http://127.0.0.1:${KtorD.getPort()}/parse?jxs=$encodedJxs&url=$encodedUrl"
-            sniffOnce(parsePage, headers, timeoutMs, detectNested = true)
+            sniffOnce(
+                startUrl = parsePage,
+                headers = headers,
+                timeoutMs = timeoutMs,
+                detectNested = true,
+                click = click,
+                siteKey = siteKey,
+            )
         }
     }
 
@@ -75,11 +94,14 @@ object JcefWebViewSniffer {
         headers: Map<String, String>,
         timeoutMs: Long,
         detectNested: Boolean,
+        click: String = "",
+        siteKey: String = "",
         depth: Int = 0,
     ): String? {
         if (depth > 3) return null
         val found = CompletableDeferred<String?>()
         val stopped = AtomicBoolean(false)
+        val challenge = AtomicBoolean(false)
         val seenPlayer = LinkedHashSet<String>()
         var browser: CefBrowser? = null
         var client: org.cef.CefClient? = null
@@ -101,9 +123,14 @@ object JcefWebViewSniffer {
                 ): Boolean {
                     val url = request?.url.orEmpty()
                     if (url.isBlank()) return false
+                    applyHeaders(request, headers)
                     val host = runCatching { URI(url).host }.getOrNull().orEmpty()
                     if (host.isNotBlank() && VideoSniffer.isAdHost(host)) {
                         return true
+                    }
+                    if (url.contains(CHALLENGE_HINT)) {
+                        challenge.set(true)
+                        showChallengeFrame(hostFrame)
                     }
                     if (detectNested && playerPattern.containsMatchIn(url) && seenPlayer.add(url) && seenPlayer.size <= 5) {
                         if (!found.isCompleted) {
@@ -111,7 +138,9 @@ object JcefWebViewSniffer {
                         }
                         return false
                     }
-                    if (VideoSniffer.isVideoFormat(url) && !url.equals(startUrl, ignoreCase = true)) {
+                    if (isVideoFormat(url, startUrl, detectNested, siteKey) &&
+                        !url.equals(startUrl, ignoreCase = true)
+                    ) {
                         log.info("JCEF 嗅探到媒体: {}", url.take(160))
                         complete(url)
                     }
@@ -141,11 +170,17 @@ object JcefWebViewSniffer {
             })
             client.addLoadHandler(object : CefLoadHandlerAdapter() {
                 override fun onLoadEnd(browser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
-                    // 依赖网络嗅探
+                    if (frame == null || !frame.isMain) return
+                    val url = frame.url
+                    if (url.isBlank() || url.equals("about:blank", ignoreCase = true)) return
+                    val scripts = buildScripts(url, click)
+                    if (scripts.isEmpty()) return
+                    SwingUtilities.invokeLater {
+                        executeScripts(frame, url, scripts, 0)
+                    }
                 }
             })
 
-            // 隐藏窗口模式，避免 OSR → JOGL → gluegen_rt.dll
             val created = arrayOfNulls<CefBrowser>(1)
             val frameHolder = arrayOfNulls<JFrame>(1)
             val swingClient = client
@@ -156,7 +191,7 @@ object JcefWebViewSniffer {
                     setLocation(-20000, -20000)
                     defaultCloseOperation = JFrame.DISPOSE_ON_CLOSE
                 }
-                val b = swingClient.createBrowser(startUrl, false, false)
+                val b = swingClient.createBrowser("about:blank", false, false)
                 frame.contentPane.layout = BorderLayout()
                 frame.contentPane.add(b.uiComponent, BorderLayout.CENTER)
                 frame.isVisible = true
@@ -166,22 +201,28 @@ object JcefWebViewSniffer {
             }
             browser = created[0]
             hostFrame = frameHolder[0]
-            if (headers.isNotEmpty()) {
-                log.debug("JCEF 请求 headers 数量={}", headers.size)
-            }
+            loadWithHeaders(browser, startUrl, headers)
 
-            val result = withTimeoutOrNull(timeoutMs) { found.await() }
+            val effectiveTimeout = if (challenge.get()) timeoutMs + 60_000 else timeoutMs
+            val result = withTimeoutOrNull(effectiveTimeout) { found.await() }
             if (result != null && result.startsWith("nested:")) {
                 val nested = result.removePrefix("nested:")
                 disposeBrowser(browser, client, hostFrame)
                 browser = null
                 client = null
                 hostFrame = null
-                return sniffOnce(nested, headers, timeoutMs, detectNested = false, depth = depth + 1)
+                return sniffOnce(
+                    startUrl = nested,
+                    headers = headers,
+                    timeoutMs = timeoutMs,
+                    detectNested = false,
+                    click = click,
+                    siteKey = siteKey,
+                    depth = depth + 1,
+                )
             }
             result
         } catch (e: Throwable) {
-            // UnsatisfiedLinkError 等属于 Error，必须用 Throwable 才能落到 HTTP 兜底
             log.warn("JCEF 嗅探失败: {} — {}", startUrl.take(120), e.message)
             null
         } finally {
@@ -189,6 +230,73 @@ object JcefWebViewSniffer {
             if (!found.isCompleted) found.complete(null)
             disposeBrowser(browser, client, hostFrame)
         }
+    }
+
+    private fun applyHeaders(request: CefRequest?, headers: Map<String, String>) {
+        if (request == null || headers.isEmpty()) return
+        headers.forEach { (key, value) ->
+            if (key.isNotBlank() && value.isNotBlank()) {
+                request.setHeaderByName(key, value, true)
+            }
+        }
+    }
+
+    private fun loadWithHeaders(browser: CefBrowser?, url: String, headers: Map<String, String>) {
+        if (browser == null) return
+        val request = CefRequest.create()
+        request.setURL(url)
+        request.setMethod("GET")
+        applyHeaders(request, headers)
+        browser.loadRequest(request)
+    }
+
+    private fun buildScripts(url: String, click: String): List<String> {
+        val script = VideoSniffer.getScript(url).toMutableList()
+        if (click.isNotBlank() && !script.contains(click)) {
+            script.add(0, click)
+        }
+        return script.filter { it.isNotBlank() }
+    }
+
+    private fun executeScripts(frame: CefFrame?, url: String, scripts: List<String>, index: Int) {
+        if (frame == null || index >= scripts.size) return
+        val js = scripts[index]
+        if (js.isBlank()) {
+            executeScripts(frame, url, scripts, index + 1)
+            return
+        }
+        frame.executeJavaScript(js, url, 0)
+        SwingUtilities.invokeLater {
+            executeScripts(frame, url, scripts, index + 1)
+        }
+    }
+
+    private fun showChallengeFrame(frame: JFrame?) {
+        if (frame == null) return
+        SwingUtilities.invokeLater {
+            if (frame.location.x < 0) {
+                val screen = Toolkit.getDefaultToolkit().screenSize
+                frame.setLocation(
+                    (screen.width - frame.width) / 2,
+                    (screen.height - frame.height) / 2,
+                )
+                frame.title = "请完成网页验证"
+                frame.isAlwaysOnTop = true
+                log.info("检测到 Cloudflare 验证，已显示内嵌浏览器窗口")
+            }
+        }
+    }
+
+    private fun isVideoFormat(url: String, startUrl: String, detect: Boolean, siteKey: String): Boolean {
+        if (!detect && url.equals(startUrl, ignoreCase = true)) return false
+        if (siteKey.isNotBlank()) {
+            runCatching {
+                val site = ApiConfig.getSite(siteKey) ?: return@runCatching
+                val spider = ApiConfig.getSpider(site)
+                if (spider.manualVideoCheck()) return spider.isVideoFormat(url)
+            }
+        }
+        return VideoSniffer.isVideoFormat(url)
     }
 
     private fun disposeBrowser(browser: CefBrowser?, client: org.cef.CefClient?, hostFrame: JFrame?) {

@@ -304,10 +304,12 @@ fun String.parseAsSettingEnable(): SettingEnable {
 
 fun String.getPlayerSetting(sitePlayerType: String? = ""): List<String> {
     val internalPlayer = this.split("#")
-    // first is site, second app setting
-    val type = if (StringUtils.isNotBlank(
-            sitePlayerType
-        )
-    ) PlayerType.getById(sitePlayerType ?: "").id else internalPlayer.first()
+    val rawType = if (StringUtils.isNotBlank(sitePlayerType)) {
+        PlayerType.getById(sitePlayerType ?: "").id
+    } else {
+        internalPlayer.first()
+    }
+    // 旧版「浏览器」播放器已移除，统一回落内置
+    val type = if (rawType == "web") PlayerType.Innie.id else rawType
     return listOf(type, internalPlayer[1])
 }

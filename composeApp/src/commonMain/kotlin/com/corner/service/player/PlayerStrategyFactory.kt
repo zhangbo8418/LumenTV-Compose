@@ -23,7 +23,7 @@ import kotlinx.coroutines.CoroutineScope
  * strategy.play(result, episode, onPlayStarted = {}, onError = {})
  * 
  * // 方式2: 获取策略名称（用于日志）
- * val name = PlayerStrategyFactory.getStrategyName(PlayerType.Web.id)
+ * val name = PlayerStrategyFactory.getStrategyName(PlayerType.Outie.id)
  * ```
  */
 object PlayerStrategyFactory {
@@ -31,7 +31,7 @@ object PlayerStrategyFactory {
     /**
      * 创建播放器策略
      * 
-     * @param playerType 播放器类型ID（innie/outie/web）
+     * @param playerType 播放器类型ID（innie/outie）
      * @param controller VLCJ控制器（仅Innie需要）
      * @param lifecycleManager 播放器生命周期管理器（仅Innie需要）
      * @param viewModelScope ViewModel协程作用域（仅Innie需要）
@@ -51,7 +51,6 @@ object PlayerStrategyFactory {
                 InniePlayerStrategy(controller, lifecycleManager, viewModelScope)
             }
             PlayerType.Outie.id -> OutiePlayerStrategy()
-            PlayerType.Web.id -> WebPlayerStrategy()
             else -> {
                 // 默认使用外部播放器
                 OutiePlayerStrategy()
@@ -66,7 +65,6 @@ object PlayerStrategyFactory {
         return when (playerType.lowercase()) {
             PlayerType.Innie.id -> "InniePlayer"
             PlayerType.Outie.id -> "OutiePlayer"
-            PlayerType.Web.id -> "WebPlayer"
             else -> "Unknown($playerType)"
         }
     }

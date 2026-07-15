@@ -46,7 +46,6 @@ import com.corner.ui.player.vlcj.VlcJInit
 import com.corner.ui.player.vlcj.VlcjFrameController
 import com.corner.util.core.Constants
 import com.corner.util.core.isEmpty
-import com.corner.util.play.BrowserUtils
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -149,7 +148,6 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
         }
 
     init {
-        BrowserUtils.initialize(this)
         setupPlayerStateObserver()
     }
 
@@ -1247,9 +1245,6 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
         SiteViewModel.clearQuickSearch()
         launched = false
 
-        BrowserUtils.cleanup()
-        BrowserUtils.detailViewModel = null
-
         log.debug("----------清理详情页资源完成----------")
     }
 
@@ -1509,8 +1504,11 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
                 return
             }
             // 对齐 TV：非直链先强制走解析，禁止「不可直接播放就立刻换线」跳过 ParseHelper
+            // 但爬虫已声明 format（如网盘 octet-stream）的是可直接播放的流，绝不能送去网页解析
             val rawPlayUrl = result.url.v()
-            if (!isDirectlyPlayable(rawPlayUrl) && !result.needParse() && !result.isUseParse()) {
+            if (result.format.isNullOrBlank() &&
+                !isDirectlyPlayable(rawPlayUrl) && !result.needParse() && !result.isUseParse()
+            ) {
                 if (com.corner.catvodcore.config.ParseConfig.hasParse() &&
                     !com.corner.util.VideoSniffer.isVideoFormat(rawPlayUrl)
                 ) {
@@ -1553,7 +1551,7 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
             }
 
             if (!isPlayerContentActive(taskId) || cannotApply(playable)) return
-            if (!isDirectlyPlayable(playable.url.v())) {
+            if (playable.format.isNullOrBlank() && !isDirectlyPlayable(playable.url.v())) {
                 log.warn("解析后仍不可直接播放，尝试换线: {}", playable.url.v().take(80))
                 handleEmptyPlayResult(tryNextLine = true)
                 return
@@ -1635,8 +1633,10 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
         if (u.isBlank()) return false
         val lower = u.lowercase()
         // 本地代理/缓存 m3u8：路径是 cached_m3u8 而非 *.m3u8，必须先于 VideoSniffer
+        // 网盘走 /proxy?do=quark 形式（问号而非斜杠），一并放行
         if (lower.contains("lumen-m3u8") || lower.contains("cached_m3u8") ||
-            lower.contains("/proxy/") && (lower.contains("127.0.0.1") || lower.contains("localhost"))
+            (lower.contains("/proxy/") || lower.contains("/proxy?")) &&
+            (lower.contains("127.0.0.1") || lower.contains("localhost"))
         ) {
             return true
         }
@@ -2430,9 +2430,9 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
             url = com.corner.catvodcore.bean.Url().apply { add(string) }
         }
 
-        // 对于外部播放器和Web播放器，直接使用对应的启动方式
+        // 外部播放器走策略启动
         when (vmPlayerType.first()) {
-            PlayerType.Outie.id, PlayerType.Web.id -> {
+            PlayerType.Outie.id -> {
                 val strategy = PlayerStrategyFactory.createStrategy(
                     playerType = vmPlayerType.first(),
                 )
@@ -2509,7 +2509,7 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
                 }
             }
         } else {
-            // 外部播放器和Web播放器只需重置状态
+            // 外部播放器只需重置状态
             _state.update { it.copy(isDLNA = false, currentPlayUrl = "") }
         }
     }

@@ -12,7 +12,6 @@ import com.corner.util.net.createDefaultOkHttpClient
 import com.corner.ui.scene.SnackBar
 import com.corner.util.m3u8.M3U8Cache
 import com.corner.util.toSingleValueMap
-import com.corner.util.play.BrowserUtils
 import com.corner.util.jcef.JcefBrowserManager
 import io.ktor.http.*
 import io.ktor.server.application.*
@@ -23,9 +22,6 @@ import io.ktor.server.request.receiveMultipart
 import io.ktor.server.request.receiveParameters
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import io.ktor.server.websocket.*
-import io.ktor.websocket.readText
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import okhttp3.Response
 import java.io.IOException
@@ -35,11 +31,6 @@ import java.io.File
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.URLDecoder
-
-val webPlaybackFinishedFlow = MutableSharedFlow<Unit>(
-    replay = 0,
-    extraBufferCapacity = 1
-)
 
 /**
  * 错误响应
@@ -616,48 +607,6 @@ fun Application.configureRouting() {
                 content,
                 ContentType.parse("application/vnd.apple.mpegurl"),
             )
-        }
-
-        /**
-         * WebSocket 端点 - 用于 Web 播放器事件通信
-         */
-        webSocket("/ws/video-events") {
-            log.info("WebSocket 连接已建立 from {}", call.request.origin.remoteHost)
-            log.info("Origin: {}", call.request.headers["Origin"])
-            log.info("Host: {}", call.request.headers["Host"])
-            
-            // 更新连接状态
-            BrowserUtils._webSocketConnectionState.value = true
-            
-            try {
-                for (frame in incoming) {
-                    frame as? io.ktor.websocket.Frame.Text ?: continue
-                    val message = frame.readText()
-                    log.info("收到 WebSocket 消息: {}", message)
-                    
-                    when (message) {
-                        "PLAYBACK_STARTED" -> {
-                            log.info("视频播放开始")
-                        }
-                        "PLAYBACK_FINISHED" -> {
-                            log.info("视频播放完成，触发下一集切换")
-                            // 发送事件到 flow
-                            launch {
-                                webPlaybackFinishedFlow.emit(Unit)
-                            }
-                        }
-                        else -> {
-                            log.debug("未知消息类型: {}", message)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                log.error("WebSocket 处理异常", e)
-            } finally {
-                // 连接关闭时更新状态
-                BrowserUtils._webSocketConnectionState.value = false
-                log.debug("WebSocket 连接已关闭")
-            }
         }
     }
 }

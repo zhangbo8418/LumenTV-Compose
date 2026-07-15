@@ -33,6 +33,9 @@ object VideoSniffer {
         return RuleConfig.getAds().any { containOrMatch(host, it) }
     }
 
+    /** 对齐 TV Sniffer.getScript：按 hosts 规则返回自动点击脚本 */
+    fun getScript(url: String): List<String> = findRule(url).script.orEmpty()
+
     private fun findRule(url: String): Rule {
         val uri = runCatching { URI(url) }.getOrNull() ?: return Rule.empty()
         val nestedHost = runCatching {

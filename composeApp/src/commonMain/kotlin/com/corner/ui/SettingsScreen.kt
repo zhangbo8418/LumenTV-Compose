@@ -1125,11 +1125,6 @@ fun PlayerSettingsContent(
                                                 SnackBar.postMsg("使用外部播放器", type = SnackBar.MessageType.INFO)
                                             }
                                         }
-
-                                        PlayerType.Web.id -> SnackBar.postMsg(
-                                            "使用浏览器播放器",
-                                            type = SnackBar.MessageType.INFO
-                                        )
                                     }
                                     vm.sync()
                                 },

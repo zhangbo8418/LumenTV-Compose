@@ -29,8 +29,6 @@ import org.apache.commons.lang3.StringUtils
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
-import com.corner.ui.nav.data.DialogState
-import com.corner.ui.nav.data.DialogState.changeDialogState
 import com.corner.ui.nav.data.ViewModelState
 import com.corner.ui.scene.SnackBar
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -66,8 +64,6 @@ object SiteViewModel {
 
     fun clearSpecialVideoLink() {
         _state.update { it.copy(isSpecialVideoLink = false) }
-        changeDialogState(false)
-        DialogState.dismissPngDialog()
     }
 
     fun getSearchResultActive(): Collect {
@@ -128,9 +124,6 @@ object SiteViewModel {
     }
 
     fun detailContent(key: String, id: String): Result? {
-        DialogState.resetBrowserChoice()
-
-        changeDialogState(false)
         _state.update { it.copy(isSpecialVideoLink = false) }
 
         val site: Site = ApiConfig.api.sites.find { it.key == key } ?: return null
@@ -186,7 +179,6 @@ object SiteViewModel {
         if (key == "push_agent") {
             return try {
                 _state.update { it.copy(isSpecialVideoLink = false) }
-                changeDialogState(false)
                 val result = Result().apply {
                     url = Url().add(id)
                     parse = 0
@@ -206,7 +198,6 @@ object SiteViewModel {
         return try {
             // 重置特殊链接标志位
             _state.update { it.copy(isSpecialVideoLink = false) }
-            changeDialogState(false)
 
             val rawResult = when (site.type) {
                 3 -> handleType3Site(site, flag, id)        // 爬虫类型站点

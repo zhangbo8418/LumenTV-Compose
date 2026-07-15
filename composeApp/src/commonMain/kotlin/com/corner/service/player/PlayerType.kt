@@ -5,15 +5,13 @@ enum class PlayerType(
     val id: String
 ) {
     Innie("内部", "innie"),
-    Outie("外部", "outie"),
-    Web("浏览器", "web");
+    Outie("外部", "outie");
 
     companion object {
-        fun getById(id: String):PlayerType{
-            return when(id.lowercase()){
-                Innie.id -> Innie
+        fun getById(id: String): PlayerType {
+            return when (id.lowercase()) {
+                Innie.id, "web" -> Innie // 旧版「浏览器」播放器已移除，回落内置
                 Outie.id -> Outie
-                Web.id -> Web
                 else -> Outie
             }
         }

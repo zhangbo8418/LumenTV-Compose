@@ -56,9 +56,11 @@ object ParseHelper {
         SnackBar.postMsg("正在解析播放地址...", type = SnackBar.MessageType.INFO, key = "vod_parse")
 
         val headers = buildHeaders(result, forcedParse)
+        val click = getClick(result)
+        val siteKey = result.key.orEmpty()
         val parse = forcedParse ?: resolveParse(result, useParse)
         val parsedUrl = when {
-            parse != null -> executeParse(parse, webUrl, result.flag.orEmpty(), headers, timeoutMs)
+            parse != null -> executeParse(parse, webUrl, result.flag.orEmpty(), headers, timeoutMs, click, siteKey)
             else -> {
                 log.warn("未找到可用解析器，尝试播放页嗅探")
                 null
@@ -109,15 +111,25 @@ object ParseHelper {
         flag: String,
         headers: Map<String, String>,
         timeoutMs: Long,
+        click: String = "",
+        siteKey: String = "",
     ): String? {
         return when (parse.type) {
-            0 -> LiveWebParser.parse(webUrl, headers, timeoutMs, listOf(parse))
+            0 -> LiveWebParser.parse(webUrl, headers, timeoutMs, listOf(parse), click, siteKey)
             1 -> LiveJsonParser.parseWith(parse, webUrl, headers)
             2 -> jsonExtend(parse, webUrl, headers, timeoutMs)
             3 -> jsonExtMix(parse, flag, webUrl, headers, timeoutMs)
             4 -> LiveSuperParser.parse(webUrl, headers, timeoutMs)
             else -> null
         }
+    }
+
+    private fun getClick(result: Result): String {
+        result.click?.takeIf { it.isNotBlank() }?.let { return it }
+        result.key?.takeIf { it.isNotBlank() }?.let { key ->
+            ApiConfig.getSite(key)?.click?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        return ""
     }
 
     private suspend fun jsonExtend(

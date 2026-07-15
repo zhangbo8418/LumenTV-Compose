@@ -25,15 +25,44 @@ public class Module {
     }
 
     public String fetch(String name) {
-        String content = cache.get(name);
-        if (StringUtils.isNotBlank(content)) return content;
-        if (name.startsWith("http")) cache.put(name, content = OkHttp.string(name));
-        else if (name.startsWith("assets")) cache.put(name, content = Asset.read(name));
-        else if (name.startsWith("lib/")) cache.put(name, content = Asset.read("js/" + name));
-        else if (name.startsWith("file:") || looksLikeLocalPath(name)) {
-            cache.put(name, content = readLocal(name));
+        String cached = cache.get(name);
+        if (StringUtils.isNotBlank(cached)) return cached;
+
+        String content = null;
+        if (name.startsWith("http")) {
+            content = OkHttp.string(name);
+            // drpy 等会把 lib/* 解析成 https://.../js/lib/*，远端常无此文件；回落到包内 assets
+            if (StringUtils.isBlank(content) || looksLikeHtml(content)) {
+                String libPath = toLibAssetPath(name);
+                if (libPath != null) content = Asset.read("js/" + libPath);
+            }
+            if (StringUtils.isNotBlank(content)) cache.put(name, content);
+        } else if (name.startsWith("assets")) {
+            content = Asset.read(name);
+            if (StringUtils.isNotBlank(content)) cache.put(name, content);
+        } else if (name.startsWith("lib/")) {
+            content = Asset.read("js/" + name);
+            if (StringUtils.isNotBlank(content)) cache.put(name, content);
+        } else if (name.startsWith("file:") || looksLikeLocalPath(name)) {
+            content = readLocal(name);
+            if (StringUtils.isNotBlank(content)) cache.put(name, content);
         }
-        return content;
+        return content != null ? content : "";
+    }
+
+    private static boolean looksLikeHtml(String content) {
+        if (StringUtils.isBlank(content)) return false;
+        String trimmed = content.stripLeading();
+        return trimmed.startsWith("<!") || trimmed.regionMatches(true, 0, "<html", 0, 5);
+    }
+
+    /** https://host/.../js/lib/foo.js → lib/foo.js */
+    private static String toLibAssetPath(String name) {
+        if (StringUtils.isBlank(name)) return null;
+        if (name.startsWith("lib/")) return name;
+        int idx = name.indexOf("/lib/");
+        if (idx < 0) return null;
+        return "lib/" + name.substring(idx + 5);
     }
 
     private static boolean looksLikeLocalPath(String name) {

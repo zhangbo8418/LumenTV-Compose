@@ -37,6 +37,9 @@ class Result {
 
     var key: String? = null
 
+    /** 对齐 TV Result.click：页面加载后注入的点击脚本 */
+    var click: String? = null
+
     val subs: List<Sub>? = null
 
     val pagecount: Int? = null

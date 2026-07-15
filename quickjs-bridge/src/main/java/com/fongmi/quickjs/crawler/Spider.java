@@ -16,6 +16,8 @@ import com.whl.quickjs.wrapper.JSObject;
 import com.whl.quickjs.wrapper.QuickJSContext;
 
 import org.json.JSONArray;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.util.Arrays;
@@ -28,6 +30,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 public class Spider {
+
+    private static final Logger log = LoggerFactory.getLogger(Spider.class);
 
     public String siteKey;
 
@@ -164,12 +168,17 @@ public class Spider {
                 try {
                     String content = Module.get().fetch(moduleName);
                     if (content == null || content.isEmpty()) {
-                        System.err.println("[quickjs] 模块内容为空（网络拉取失败？）: " + moduleName);
+                        log.warn("[quickjs] 模块内容为空: {}", moduleName);
                         return null;
                     }
-                    return ctx.compileModule(content, moduleName);
+                    byte[] bytecode = ctx.compileModule(content, moduleName);
+                    if (bytecode == null || bytecode.length == 0) {
+                        log.warn("[quickjs] 模块编译返回空: {} (sourceLen={})", moduleName, content.length());
+                        return null;
+                    }
+                    return bytecode;
                 } catch (Throwable e) {
-                    System.err.println("[quickjs] 模块编译失败: " + moduleName + " -> " + e.getMessage());
+                    log.warn("[quickjs] 模块编译失败: {} -> {}", moduleName, e.getMessage());
                     return null;
                 }
             }
@@ -183,7 +192,7 @@ public class Spider {
             Class<?> clz = dex.loadClass("com.github.catvod.js.Function");
             clz.getDeclaredConstructor(QuickJSContext.class).newInstance(ctx);
         } catch (Throwable e) {
-            System.err.println("[quickjs] 加载 jar Function 失败: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            log.warn("[quickjs] 加载 jar Function 失败: {}: {}", e.getClass().getSimpleName(), e.getMessage());
         }
     }
 
@@ -191,6 +200,9 @@ public class Spider {
         String spider = "__JS_SPIDER__";
         String global = "globalThis." + spider;
         String content = Module.get().fetch(api);
+        if (content == null || content.isEmpty()) {
+            throw new IllegalStateException("JS api 内容为空，请检查网络或 api 地址: " + api);
+        }
         cat = content.contains("__jsEvalReturn");
         ctx.evaluateModule(content.replace(spider, global), api);
         ctx.evaluateModule(String.format(Asset.read("js/lib/spider.js"), api));

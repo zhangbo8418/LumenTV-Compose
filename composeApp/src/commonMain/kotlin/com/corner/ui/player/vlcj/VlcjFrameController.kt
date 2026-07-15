@@ -9,7 +9,6 @@ import com.corner.ui.player.PlayerLifecycleManager
 import com.corner.ui.player.VodPlaybackHost
 import com.corner.ui.player.frame.FramePlayerController
 import com.corner.ui.player.frame.FrameRenderer
-import com.corner.util.play.BrowserUtils.scope
 import com.corner.util.thisLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -82,7 +81,7 @@ class VlcjFrameController(
      */
 
     override fun load(url: String): PlayerController {
-        scope.launch {
+        controller.scope.launch {
             log.info("load - 开始加载视频: {}", url)
             controller.loadURL(url, 15_000L)
             delay(300)

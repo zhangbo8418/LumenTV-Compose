@@ -16,11 +16,13 @@ object LiveWebParser {
         headers: Map<String, String>,
         timeoutMs: Long = 15_000,
         parses: List<Parse>? = null,
+        click: String = "",
+        siteKey: String = "",
     ): String? {
         val items = parses ?: ApiConfig.api.parses.filter { it.type == 0 }
         if (items.isEmpty()) return null
 
-        JcefWebViewSniffer.parse(webUrl, headers, timeoutMs, items)?.let { return it }
+        JcefWebViewSniffer.parse(webUrl, headers, timeoutMs, items, click, siteKey)?.let { return it }
 
         log.warn("JCEF 未嗅探到地址，尝试 HTTP 轻量嗅探")
         HttpJxSniffer.sniff(webUrl, headers, items)?.let { return it }

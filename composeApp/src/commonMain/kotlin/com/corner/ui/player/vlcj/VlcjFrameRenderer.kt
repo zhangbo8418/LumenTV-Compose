@@ -55,8 +55,15 @@ class VlcjFrameRenderer(
         synchronized(bitmapSwapLock) {
             // 必须在锁内重读：release/cleanup 在锁内置空并关闭旧帧，锁外读到的引用可能已失效
             val frame = latestFrame.get() ?: return null
+            priorUiHeldBitmap = uiHeldBitmap
             uiHeldBitmap = frame.bitmap
-            recycleInFlight(exclude1 = frame.bitmap, exclude2 = currentBitmap)
+            // 保留当前帧 + 上一帧，避免 Compose 仍绘制旧 ImageBitmap 时底层 Bitmap 已被回收
+            recycleInFlight(
+                frame.bitmap,
+                currentBitmap,
+                uiHeldBitmap,
+                priorUiHeldBitmap,
+            )
             return frame.imageBitmap
         }
     }
@@ -67,6 +74,10 @@ class VlcjFrameRenderer(
     /** UI 线程当前持有（可能仍在绘制）的帧，任何路径都不得同步关闭它 */
     @Volatile
     private var uiHeldBitmap: Bitmap? = null
+
+    /** 上一帧 UI 仍可能正在绘制（FrameContainer state 滞后于 peek） */
+    @Volatile
+    private var priorUiHeldBitmap: Bitmap? = null
 
     /** 等待 UI 拉帧后回收的旧帧；VLC display 线程只入队，绝不在此队列上做回收 */
     private val inFlightBitmaps = ArrayDeque<Bitmap>()
@@ -204,12 +215,12 @@ class VlcjFrameRenderer(
     }
     
     /** 回收所有待回收帧（排除 UI 正持有的与最新发布的）。必须在 bitmapSwapLock 内调用 */
-    private fun recycleInFlight(exclude1: Bitmap?, exclude2: Bitmap?) {
+    private fun recycleInFlight(vararg excludes: Bitmap?) {
         if (inFlightBitmaps.isEmpty()) return
         val iterator = inFlightBitmaps.iterator()
         while (iterator.hasNext()) {
             val bitmap = iterator.next()
-            if (bitmap === exclude1 || bitmap === exclude2) continue
+            if (excludes.any { it === bitmap }) continue
             iterator.remove()
             if (!bitmap.isClosed) {
                 bitmapPool.release(bitmap)
