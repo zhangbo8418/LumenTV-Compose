@@ -31,12 +31,15 @@ public class Module {
         String content = null;
         if (name.startsWith("http")) {
             content = OkHttp.string(name);
-            // drpy 等会把 lib/* 解析成 https://.../js/lib/*，远端常无此文件；回落到包内 assets
-            if (StringUtils.isBlank(content) || looksLikeHtml(content)) {
+            // CDN 403/404、网关页等非 JS：不可缓存，避免永久污染
+            if (StringUtils.isBlank(content) || looksLikeNonJs(content)) {
+                content = null;
                 String libPath = toLibAssetPath(name);
                 if (libPath != null) content = Asset.read("js/" + libPath);
             }
-            if (StringUtils.isNotBlank(content)) cache.put(name, content);
+            if (StringUtils.isNotBlank(content) && !looksLikeNonJs(content)) {
+                cache.put(name, content);
+            }
         } else if (name.startsWith("assets")) {
             content = Asset.read(name);
             if (StringUtils.isNotBlank(content)) cache.put(name, content);
@@ -50,10 +53,18 @@ public class Module {
         return content != null ? content : "";
     }
 
-    private static boolean looksLikeHtml(String content) {
-        if (StringUtils.isBlank(content)) return false;
+    /** HTML/XML/404 文本等，不可作为 ES module 源码 */
+    public static boolean looksLikeNonJs(String content) {
+        if (StringUtils.isBlank(content)) return true;
         String trimmed = content.stripLeading();
-        return trimmed.startsWith("<!") || trimmed.regionMatches(true, 0, "<html", 0, 5);
+        if (trimmed.startsWith("<!") || trimmed.startsWith("<?xml") || trimmed.startsWith("<Error")
+                || trimmed.regionMatches(true, 0, "<html", 0, 5)) {
+            return true;
+        }
+        // nginx / 网关常见短错误页
+        String lower = trimmed.toLowerCase();
+        return lower.startsWith("404 ") || lower.equals("404") || lower.startsWith("403 ")
+                || lower.contains("page not found") || lower.contains("access denied");
     }
 
     /** https://host/.../js/lib/foo.js → lib/foo.js */

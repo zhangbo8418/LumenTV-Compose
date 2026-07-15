@@ -19,7 +19,10 @@ import org.json.JSONArray;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.commons.lang3.StringUtils;
+
 import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -158,7 +161,12 @@ public class Spider {
         ctx.setModuleLoader(new QuickJSContext.BytecodeModuleLoader() {
             @Override
             public String moduleNormalizeName(String baseModuleName, String moduleName) {
-                return UriUtil.resolve(baseModuleName, moduleName);
+                // JNI NewStringUTF 会损坏 emoji 等非 BMP 字符；相对路径一律相对原始 api 解析。
+                String base = baseModuleName;
+                if (isMangledModuleUrl(base) || !StringUtils.startsWith(base, "http")) {
+                    base = encodeModuleUrl(api);
+                }
+                return UriUtil.resolve(base, moduleName);
             }
 
             @Override
@@ -166,14 +174,16 @@ public class Spider {
                 // 失败时返回 null 而不是抛异常：异常穿透 JNI 模块回调会让原生层在
                 // 挂起异常状态下继续执行，属未定义行为。返回 null 由原生层抛干净的 QuickJSException。
                 try {
-                    String content = Module.get().fetch(moduleName);
-                    if (content == null || content.isEmpty()) {
-                        log.warn("[quickjs] 模块内容为空: {}", moduleName);
+                    String url = repairModuleUrl(moduleName);
+                    String content = Module.get().fetch(url);
+                    if (content == null || content.isEmpty() || Module.looksLikeNonJs(content)) {
+                        log.warn("[quickjs] 模块内容无效: {} (fetched={})", url,
+                                content == null ? "null" : content.length());
                         return null;
                     }
-                    byte[] bytecode = ctx.compileModule(content, moduleName);
+                    byte[] bytecode = ctx.compileModule(content, url);
                     if (bytecode == null || bytecode.length == 0) {
-                        log.warn("[quickjs] 模块编译返回空: {} (sourceLen={})", moduleName, content.length());
+                        log.warn("[quickjs] 模块编译返回空: {} (sourceLen={})", url, content.length());
                         return null;
                     }
                     return bytecode;
@@ -183,6 +193,61 @@ public class Spider {
                 }
             }
         });
+    }
+
+    /**
+     * QuickJS/JNI 路径禁止直接塞入未编码的 emoji。上游 NewStringUTF 会把 🖥 变成 ð¥，
+     * 随后 HTTP 404「404 page not found」再被 compileModule → expecting ';'。
+     */
+    private static String encodeModuleUrl(String url) {
+        if (url == null || url.isEmpty()) return url;
+        try {
+            // 仅编码 path/query 中的非 ASCII；已编码的 %XX 保持不变
+            StringBuilder sb = new StringBuilder(url.length() + 16);
+            for (int i = 0; i < url.length(); ) {
+                int cp = url.codePointAt(i);
+                i += Character.charCount(cp);
+                if (cp <= 0x7F) {
+                    sb.append((char) cp);
+                } else {
+                    byte[] bytes = new String(Character.toChars(cp)).getBytes(StandardCharsets.UTF_8);
+                    for (byte b : bytes) {
+                        sb.append('%');
+                        String hex = Integer.toHexString(b & 0xFF).toUpperCase();
+                        if (hex.length() == 1) sb.append('0');
+                        sb.append(hex);
+                    }
+                }
+            }
+            return sb.toString();
+        } catch (Throwable e) {
+            return url;
+        }
+    }
+
+    /** 检测 UTF-8 被按 Latin-1 解读后的典型乱码（如 🖥 → ð¥） */
+    private static boolean isMangledModuleUrl(String url) {
+        if (url == null || url.isEmpty()) return true;
+        // Latin-1 高位控制/扩展字符出现在 http URL path 中，几乎一定是编码损坏
+        for (int i = 0; i < url.length(); i++) {
+            char c = url.charAt(i);
+            if (c >= 0x80 && c <= 0xFF) return true;
+        }
+        return false;
+    }
+
+    private String repairModuleUrl(String moduleName) {
+        if (moduleName == null || moduleName.isEmpty()) return encodeModuleUrl(api);
+        if (isMangledModuleUrl(moduleName)) {
+            // 从损坏的 URL 里尽量取出相对文件名，相对正确 api 重解析
+            String file = moduleName;
+            int slash = Math.max(moduleName.lastIndexOf('/'), moduleName.lastIndexOf('\\'));
+            if (slash >= 0 && slash + 1 < moduleName.length()) {
+                file = moduleName.substring(slash + 1);
+            }
+            return UriUtil.resolve(encodeModuleUrl(api), file);
+        }
+        return encodeModuleUrl(moduleName);
     }
 
     /** 对齐 TV：只从 spider.jar ClassLoader 加载 com.github.catvod.js.Function。 */
@@ -200,12 +265,14 @@ public class Spider {
         String spider = "__JS_SPIDER__";
         String global = "globalThis." + spider;
         String content = Module.get().fetch(api);
-        if (content == null || content.isEmpty()) {
+        if (content == null || content.isEmpty() || Module.looksLikeNonJs(content)) {
             throw new IllegalStateException("JS api 内容为空，请检查网络或 api 地址: " + api);
         }
         cat = content.contains("__jsEvalReturn");
-        ctx.evaluateModule(content.replace(spider, global), api);
-        ctx.evaluateModule(String.format(Asset.read("js/lib/spider.js"), api));
+        // 模块名必须百分号编码：桌面 JVM 上 QuickJS→JNI NewStringUTF 无法可靠传递 emoji
+        String moduleApi = encodeModuleUrl(api);
+        ctx.evaluateModule(content.replace(spider, global), moduleApi);
+        ctx.evaluateModule(String.format(Asset.read("js/lib/spider.js"), moduleApi));
         jsObject = (JSObject) ctx.getProperty(ctx.getGlobalObject(), spider);
     }
 
