@@ -36,7 +36,7 @@ fun detectHostVlcPlatform(): String {
     }
 }
 
-fun resolveVlcTarget(platformOverride: String?): VlcNightlyTarget {
+fun resolveVlcTarget(platformOverride: String?): VlcNightlyTarget? {
     val platform = platformOverride?.takeIf { it.isNotBlank() } ?: detectHostVlcPlatform()
     return when (platform) {
         "macos-arm64" -> VlcNightlyTarget(
@@ -57,10 +57,8 @@ fun resolveVlcTarget(platformOverride: String?): VlcNightlyTarget {
             artifactRegex = Regex("""href="(vlc-4[^"]+-win64-[^"]+\.zip)""""),
             kind = "win-zip",
         )
-        else -> error(
-            "Bundled LibVLC 4 nightly 暂不支持 platform=$platform（仅 windows-x64 / macos-arm64 / macos-x64）。" +
-                " Linux 请继续用系统 VLC 或后续补 snap/deb 解包。",
-        )
+        // Linux nightly 暂无稳定 zip/sdk；打包任务仍会 dependsOn 本任务，故跳过而非失败
+        else -> null
     }
 }
 
@@ -224,7 +222,14 @@ tasks.register("prepareBundledVlc") {
         val platformProp = project.findProperty("lumen.vlc.platform")?.toString()
         val buildPinned = project.findProperty("lumen.vlc.buildId")?.toString()
         val force = project.findProperty("lumen.vlc.force")?.toString()?.toBoolean() == true
-        val target = resolveVlcTarget(platformProp)
+        val platform = platformProp?.takeIf { it.isNotBlank() } ?: detectHostVlcPlatform()
+        val target = resolveVlcTarget(platform)
+        if (target == null) {
+            logger.lifecycle(
+                "Skip prepareBundledVlc: platform=$platform 暂无 LibVLC 4 nightly 自动捆绑（仅 windows-x64 / macos-arm64 / macos-x64）",
+            )
+            return@doLast
+        }
         val buildId = latestVlcBuildId(target.channel, buildPinned)
         val (url, archiveName) = resolveVlcArtifact(target, buildId)
 

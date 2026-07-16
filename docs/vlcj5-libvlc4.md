@@ -39,6 +39,8 @@ git checkout experiment/vlcj5-libvlc4
 
 > Nightly **不稳定、无官方支持**。本分支仅供验证。
 
+Linux 打包会跳过 `prepareBundledVlc`（尚无稳定 nightly zip），继续用系统 VLC / 现有资源。
+
 ## 代码改动要点
 
 | 位置 | 行为 |
