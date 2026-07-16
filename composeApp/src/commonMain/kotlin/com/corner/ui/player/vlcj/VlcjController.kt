@@ -289,6 +289,8 @@ class VlcjController : PlayerController {
 
 
         override fun playing(mediaPlayer: MediaPlayer) {
+            // vlcj-5：清除 stopAsync 残留的 stopRequested，否则自然播完不会触发 finished→下一集
+            runCatching { mediaPlayer.controls().clearStopRequested() }
             playerLoading = false
             playerPlaying = true
             loadStartedAtMs = 0L
@@ -399,17 +401,17 @@ class VlcjController : PlayerController {
                 return
             }
             if (isHlsMrl(mrl) || isStreamingUrl(mrl)) {
-                if (mediaLength > 0 && playDuration < mediaLength - 10_000) {
+                val nearEnd = mediaLength <= 0 || playDuration >= mediaLength - 10_000
+                if (!nearEnd) {
                     log.warn(
                         "流媒体未播完即 finished (播放{}ms / 总长{}ms)",
                         playDuration,
                         mediaLength,
                     )
-                } else {
-                    log.debug("流媒体结束 finished (播放{}ms)", playDuration)
+                    _state.update { it.copy(state = PlayState.PAUSE) }
+                    return
                 }
-                _state.update { it.copy(state = PlayState.PAUSE) }
-                return
+                log.debug("流媒体正常结束 finished (播放{}ms / 总长{}ms)", playDuration, mediaLength)
             }
 
             _state.update { it.copy(state = PlayState.PAUSE) }
@@ -685,6 +687,9 @@ class VlcjController : PlayerController {
                     return@submit
                 }
                 playable.controls().play()
+                // vlcj-5：stopAsync 会置 stopRequested；若当时已是 stopped 可能收不到 stopped 清标志。
+                // 未清除时，播完只会 stopped、不会合成 finished → 无法自动下一集。
+                playable.controls().clearStopRequested()
                 if (isLoadGenerationStale(generation)) {
                     log.info("engine.start play 后已过期，忽略 generation={}", generation)
                     nativeDone.set(true)
@@ -712,6 +717,7 @@ class VlcjController : PlayerController {
                 runCatching {
                     if (retryPlayer.media().prepare(playUrl, *options)) {
                         retryPlayer.controls().play()
+                        retryPlayer.controls().clearStopRequested()
                         log.info("engine.start 重建后完成 generation={}", generation)
                     }
                 }.onFailure {
