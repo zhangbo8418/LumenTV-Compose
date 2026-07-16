@@ -38,6 +38,10 @@ jobs:
         shell: pwsh
         run: ./gradlew prepareBundledJcef "-Plumen.jcef.platform=windows-x64"
 
+      - name: 📺 Prepare bundled LibVLC 4 (windows-x64 nightly)
+        shell: pwsh
+        run: ./gradlew prepareBundledVlc "-Plumen.vlc.platform=windows-x64"
+
       - name: 🟨 Build QuickJS native (Win7 MinGW msvcrt)
         shell: pwsh
         run: |
@@ -125,6 +129,9 @@ jobs:
       - name: 🌐 Prepare bundled JCEF (macos-arm64)
         run: ./gradlew prepareBundledJcef "-Plumen.jcef.platform=macos-arm64"
 
+      - name: 📺 Prepare bundled LibVLC 4 (macos-arm64 nightly)
+        run: ./gradlew prepareBundledVlc "-Plumen.vlc.platform=macos-arm64"
+
       - name: 🟨 Build QuickJS native (macos-arm64)
         run: |
           chmod +x ./scripts/build-quickjs-native.sh
@@ -178,6 +185,9 @@ jobs:
 
       - name: 🌐 Prepare bundled JCEF (macos-x64)
         run: arch -x86_64 ./gradlew prepareBundledJcef "-Plumen.jcef.platform=macos-x64"
+
+      - name: 📺 Prepare bundled LibVLC 4 (macos-x64 nightly)
+        run: arch -x86_64 ./gradlew prepareBundledVlc "-Plumen.vlc.platform=macos-x64"
 
       - name: 🟨 Build QuickJS native (macos-x64)
         run: |

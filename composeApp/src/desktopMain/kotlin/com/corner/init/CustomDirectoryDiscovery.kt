@@ -24,15 +24,22 @@ class CustomDirectoryDiscovery:DiscoveryDirectoryProvider {
             log.debug("resPath: $this")
             arrayOf.add(this.trimBlankChar() + "/lib")
         }
-        val debugPath = File(System.getProperty("user.dir")).resolve("src/desktopMain/appResources/${SysVerUtil.getAppResourcesPlatform()}/lib")
-        if(StringUtils.isNotBlank(debugPath.toString())){
-            arrayOf.add(debugPath.toString())
+        val userDir = File(System.getProperty("user.dir"))
+        val platform = SysVerUtil.getAppResourcesPlatform()
+        listOf(
+            userDir.resolve("src/desktopMain/appResources/$platform/lib"),
+            userDir.resolve("composeApp/src/desktopMain/appResources/$platform/lib"),
+        ).forEach { debugPath ->
+            if (debugPath.isDirectory) {
+                arrayOf.add(debugPath.absolutePath)
+            }
         }
         val playerPath = SettingStore.getSettingItem(SettingType.PLAYER.id).split("#")
-        if(playerPath.size > 1 && StringUtils.isNotBlank(playerPath[1])){
+        if (playerPath.size > 1 && StringUtils.isNotBlank(playerPath[1])) {
             val path = playerPath[1].trimBlankChar()
-            if(!File(path).exists()) return arrayOf.toTypedArray()
-            arrayOf.add(File(path).parent)
+            if (File(path).exists()) {
+                arrayOf.add(File(path).parent)
+            }
         }
         log.info("自定义vlc播放器路径：$arrayOf")
         return arrayOf.toTypedArray()

@@ -175,6 +175,7 @@ apply(from = "python-bundle.gradle.kts")
 apply(from = "ffmpeg-bundle.gradle.kts")
 apply(from = "jcef-bundle.gradle.kts")
 apply(from = "quickjs-bundle.gradle.kts")
+apply(from = "vlc-bundle.gradle.kts")
 
 compose.desktop {
     application {

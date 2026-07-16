@@ -1,0 +1,85 @@
+name: Bundle LibVLC 4 nightlies
+
+# 从 artifacts.videolan.org 拉取 VLC 4 nightly，解包进 appResources，供本分支 CI/本地验证。
+# 不把百兆原生库 commit 进仓库（与 ffmpeg/jcef 相同：打包时下载）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: "固定 nightly buildId，如 20260715-0413；空则取各 channel 最新"
+        type: string
+        default: ""
+      upload_app_resources:
+        description: "上传解包后的 appResources 片段为 artifact（便于本地取用）"
+        type: boolean
+        default: true
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-latest
+            java_arch: x64
+          - platform: macos-arm64
+            os: macos-14
+            java_arch: aarch64
+          - platform: macos-x64
+            os: macos-14
+            java_arch: x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          architecture: ${{ matrix.java_arch }}
+          cache: gradle
+
+      - name: Prepare bundled LibVLC 4
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          EXTRA=()
+          if [[ -n "${{ inputs.build_id }}" ]]; then
+            EXTRA+=("-Plumen.vlc.buildId=${{ inputs.build_id }}")
+          fi
+          if [[ "${{ matrix.platform }}" == "macos-x64" ]]; then
+            arch -x86_64 ./gradlew prepareBundledVlc \
+              "-Plumen.vlc.platform=${{ matrix.platform }}" \
+              "-Plumen.vlc.force=true" \
+              "${EXTRA[@]}"
+          else
+            ./gradlew prepareBundledVlc \
+              "-Plumen.vlc.platform=${{ matrix.platform }}" \
+              "-Plumen.vlc.force=true" \
+              "${EXTRA[@]}"
+          fi
+          echo "---- marker ----"
+          cat "composeApp/src/desktopMain/appResources/${{ matrix.platform }}/.lumen-vlc-bundle" || true
+          echo "---- lib ----"
+          ls -la "composeApp/src/desktopMain/appResources/${{ matrix.platform }}/lib" | head -40
+
+      - name: Upload appResources snippet
+        if: ${{ inputs.upload_app_resources }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vlc4-${{ matrix.platform }}
+          path: |
+            composeApp/src/desktopMain/appResources/${{ matrix.platform }}/.lumen-vlc-bundle
+            composeApp/src/desktopMain/appResources/${{ matrix.platform }}/lib/libvlc*
+            composeApp/src/desktopMain/appResources/${{ matrix.platform }}/lib/libvlccore*
+            composeApp/src/desktopMain/appResources/${{ matrix.platform }}/lib/plugins
+            composeApp/src/desktopMain/appResources/${{ matrix.platform }}/plugins
+          if-no-files-found: error
+          retention-days: 14
