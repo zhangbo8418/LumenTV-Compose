@@ -42,9 +42,22 @@ jobs:
       # 统一版本号生成逻辑
       - id: set-version
         run: |
-          if [ "${{ github.ref }}" == "refs/heads/pre-release" ]; then
-            NEW_TAG="${{ steps.get-latest-tag.outputs.LATEST_TAG }}-alpha.$(date +'%Y%m%d%H%M')"
+          BASE="${{ steps.get-latest-tag.outputs.LATEST_TAG }}"
+          REF="${{ github.ref }}"
+          REF_NAME="${{ github.ref_name }}"
+
+          if [ "$REF" = "refs/heads/pre-release" ]; then
+            NEW_TAG="${BASE}-alpha.$(date +'%Y%m%d%H%M')"
+          elif [[ "$REF" == refs/tags/v* ]]; then
+            NEW_TAG="$REF_NAME"
+          elif [ "$REF" = "refs/heads/main" ] || [ "$REF" = "refs/heads/master" ]; then
+            # 正式分支复用最新语义化 tag（覆盖/更新对应 Release）
+            NEW_TAG="$BASE"
           else
-            NEW_TAG="${{ steps.get-latest-tag.outputs.LATEST_TAG }}"
+            # 实验分支等：独立预发布 tag，避免盖掉正式版下载区
+            SAFE_BRANCH=$(echo "$REF_NAME" | tr '/' '-' | tr -cd '[:alnum:]._-')
+            NEW_TAG="${BASE}-exp.${SAFE_BRANCH}.$(date +'%Y%m%d%H%M')"
           fi
+
           echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "Generated release tag: $NEW_TAG"

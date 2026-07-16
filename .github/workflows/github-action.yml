@@ -247,6 +247,15 @@ jobs:
 
   release:
     runs-on: ubuntu-latest
+    # 任一平台失败时不再整段跳过：有包就能推到 Release 下载区
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.set-tag.result == 'success' &&
+      (needs.build-win.result == 'success' ||
+       needs.build-linux.result == 'success' ||
+       needs.build-mac-arm64.result == 'success' ||
+       needs.build-mac-amd64.result == 'success')
     needs: [ build-win, build-linux, build-mac-arm64, build-mac-amd64, set-tag, build-updater ]
     steps:
       - name: 📥 Checkout code
@@ -254,6 +263,8 @@ jobs:
 
       - name: 📥 Download all artifacts
         uses: actions/download-artifact@v4
+        with:
+          merge-multiple: false
 
       - name: 📋 Organize files for release
         run: |
@@ -273,6 +284,10 @@ jobs:
 
           echo "📋 发布文件列表:"
           ls -la ./release-files/
+          if [ -z "$(ls -A ./release-files 2>/dev/null)" ]; then
+            echo "❌ release-files 为空，无法创建 Release"
+            exit 1
+          fi
 
       - name: 📝 Generate version.json
         run: |
@@ -357,6 +372,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ./release-files/*
+          fail_on_unmatched_files: false
           tag_name: ${{ needs.set-tag.outputs.tag }}
           name: "LumenTV ${{ needs.set-tag.outputs.tag }}"
           body: |
@@ -387,6 +403,6 @@ jobs:
             
             > 💡 提示：完整的历史更新记录请查看 [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(needs.set-tag.outputs.tag, '-exp.') || contains(needs.set-tag.outputs.tag, '-alpha.') }}
     permissions:
       contents: write
