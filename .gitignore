@@ -26,3 +26,5 @@ cache
 composeApp/src/desktopMain/appResources/*/python/
 composeApp/src/desktopMain/appResources/*/ffmpeg/
 composeApp/src/desktopMain/appResources/*/jcef-bundle/
+# LibVLC 4 nightly 标记（prepareBundledVlc 生成）
+composeApp/src/desktopMain/appResources/*/.lumen-vlc-bundle
