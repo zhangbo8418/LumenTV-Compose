@@ -99,9 +99,9 @@ class VlcjController : PlayerController {
     }
 
     /**
-     * 对齐 TV stopPlaybackForRefresh：换集/换线前作废排队并 pause。
-     * 不 mute：pause 已无声；mute 只会把用户静音状态弄乱，起播后像「被静音」。
-     * 也不调 libvlc stop：CallbackVideoSurface 下易卡死 native 锁。
+     * 对齐 TV stopPlaybackForRefresh：换集/换线前作废排队并异步 stop。
+     * LibVLC 4 / vlcj-5：`controls().stopAsync()` → libvlc_media_player_stop_async，立即返回。
+     * 勿用 latch 版 `stop()`（会等 stopped，热路径易拖慢换集）。
      */
     fun stopPlaybackForRefresh(): Int {
         val gen = loadGeneration.incrementAndGet()
@@ -111,8 +111,7 @@ class VlcjController : PlayerController {
         abortStuckVlcLoad("stopPlaybackForRefresh gen=$gen")
         _state.update { it.copy(state = PlayState.PAUSE) }
         scope.launch(Dispatchers.IO) {
-            runCatching { player?.controls()?.setPause(true) }
-                .onFailure { log.warn("stopPlaybackForRefresh pause 失败: {}", it.message) }
+            requestStopAsync("stopPlaybackForRefresh")
         }
         return gen
     }
@@ -148,11 +147,8 @@ class VlcjController : PlayerController {
     private val playbackEnded = AtomicBoolean(false)
 
     /**
-     * 对齐 TV PlaybackService.suspend：离开详情立刻 pause。
-     *
-     * 不调 controls().stop()：CallbackVideoSurface 下 stop 常在 stopped 后仍不返回并占住
-     * libvlc native 锁，导致后续 prepare/play 永远卡住。
-     * 也不 mute：pause 已无声；静音状态应留给用户手动控制。
+     * 对齐 TV PlaybackService.suspend：离开详情立刻异步 stop。
+     * LibVLC 4：stop_async 不阻塞；勿在事件线程同步等 stopped。
      */
     fun endPlayback() {
         if (!playbackEnded.compareAndSet(false, true)) {
@@ -164,10 +160,8 @@ class VlcjController : PlayerController {
         abortStuckVlcLoad("endPlayback")
         _state.update { it.copy(state = PlayState.PAUSE) }
         scope.launch(Dispatchers.IO) {
-            runCatching {
-                player?.controls()?.setPause(true)
-                log.info("endPlayback 完成（pause，跳过 stop/mute）")
-            }.onFailure { log.warn("endPlayback pause 失败: {}", it.message) }
+            requestStopAsync("endPlayback")
+            log.info("endPlayback 已请求 stopAsync")
         }
     }
 
@@ -250,21 +244,25 @@ class VlcjController : PlayerController {
 
 
         override fun videoOutput(mediaPlayer: MediaPlayer?, newCount: Int) {
-            val trackInfo = mediaPlayer?.media()?.info()?.videoTracks()?.first()
-            if (trackInfo != null) {
+            val player = mediaPlayer ?: return
+            val trackList = player.tracks().videoTracks()
+            try {
+                val trackInfo = trackList.tracks().firstOrNull() ?: return
                 _state.update {
                     it.copy(
                         mediaInfo = MediaInfo(
-                            url = mediaPlayer.media()?.info()?.mrl() ?: "",
+                            url = player.media()?.info()?.mrl() ?: "",
                             height = trackInfo.height(),
                             width = trackInfo.width(),
                             videoCodec = trackInfo.codecName(),
                             bitRate = trackInfo.bitRate(),
-                            duration = mediaPlayer.status().length(),
+                            duration = player.status().length(),
                             codecDescription = trackInfo.codecDescription()
                         )
                     )
                 }
+            } finally {
+                trackList.release()
             }
         }
 
@@ -524,10 +522,6 @@ class VlcjController : PlayerController {
         withContext(Dispatchers.IO) {
             stopTrafficMonitor()
             stopPlaybackForRefresh()
-            runCatching {
-                player?.controls()?.setPause(true)
-                _state.update { it.copy(state = PlayState.PAUSE) }
-            }
             deferredEffects.clear()
             log.debug("cleanupAsync 完成（保留单例实例）")
         }
@@ -602,7 +596,7 @@ class VlcjController : PlayerController {
     /**
      * 对齐 TV ExoPlayerEngine.startInternal：
      * prepare(media) → play()；续播起点写入 :start-time（秒）。
-     * 不先 controls().stop()：与 display/play 并发易在 libvlc 死锁。
+     * 起播前 stopAsync（LibVLC 4 异步），避免旧媒体与 CallbackVideoSurface 抢锁。
      */
     private fun engineStart(generation: Int, url: String): Boolean {
         if (isLoadGenerationStale(generation)) {
@@ -675,6 +669,8 @@ class VlcjController : PlayerController {
                 return@submit
             }
             try {
+                // LibVLC 4：异步停旧媒体后再 prepare，避免同步 stop 死锁
+                runCatching { playable.controls().stopAsync() }
                 // 对齐 TV：setMedia/prepare → play（vlcj prepare 即 changeMedia）
                 val prepared = playable.media().prepare(playUrl, *options)
                 if (!prepared) {
@@ -809,20 +805,24 @@ class VlcjController : PlayerController {
 
     override fun stop() = catch {
         showTips("停止")
-        // 不调 libvlc stop（易卡死）；pause 即可停声，保持用户 mute 状态不动
-        runCatching { player?.controls()?.setPause(true) }
+        requestStopAsync("stop")
         _state.update { it.copy(state = PlayState.PAUSE) }
     }
 
     override suspend fun stopAsync() {
         withContext(Dispatchers.IO) {
-            log.debug("异步停止播放（pause，跳过 libvlc stop）...")
+            log.debug("异步停止播放（stopAsync）...")
             showTips("停止")
-            runCatching { player?.controls()?.setPause(true) }
-                .onFailure { log.warn("异步停止失败: {}", it.message) }
+            requestStopAsync("stopAsync")
             _state.update { it.copy(state = PlayState.PAUSE) }
         }
         frame?.clearVideoFrame()
+    }
+
+    /** LibVLC 4：libvlc_media_player_stop_async；勿用 latch 版 controls().stop() */
+    private fun requestStopAsync(reason: String) {
+        runCatching { player?.controls()?.stopAsync() }
+            .onFailure { log.warn("stopAsync 失败 ({}): {}", reason, it.message) }
     }
 
     private fun isStreamingUrl(mrl: String): Boolean {

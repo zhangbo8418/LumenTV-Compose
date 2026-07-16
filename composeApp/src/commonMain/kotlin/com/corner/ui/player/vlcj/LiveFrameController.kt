@@ -118,7 +118,7 @@ class LiveFrameController(
             try {
                 frameRenderer.release()
                 bitmapPool.close()
-                controller.player?.controls()?.stop()
+                controller.player?.controls()?.stopAsync()
                 controller.player?.videoSurface()?.set(null)
                 videoSurface = null
                 Thread.sleep(100)

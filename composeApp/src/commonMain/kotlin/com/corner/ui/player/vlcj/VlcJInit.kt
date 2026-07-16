@@ -9,7 +9,8 @@ import com.corner.ui.getPlayerSetting
 import uk.co.caprica.vlcj.factory.discovery.NativeDiscovery
 
 /**
- * 点播内嵌 VLC 进程级单例：启动创建一次，进出详情只 stop/load，退出 App 才 release。
+ * 点播内嵌 VLC 进程级单例：启动创建一次，进出详情 stopAsync/load，退出 App 才 release。
+ * 实验分支（LibVLC 4 / vlcj-5）：依赖本机 VLC 4 nightly，见 docs/vlcj5-libvlc4.md。
  */
 class VlcJInit {
     companion object {
@@ -109,7 +110,7 @@ class VlcJInit {
             val discover = NativeDiscovery().discover()
             if (!discover && SettingStore.getPlayerSetting()[0] as Boolean) {
                 SnackBar.postMsg(
-                    "未找到VLC播放器组件，请安装VLC或者配置vlc可执行文件位置",
+                    "未找到 VLC 4 组件，请安装 VLC 4 nightly 或在设置中配置路径（见 docs/vlcj5-libvlc4.md）",
                     type = SnackBar.MessageType.ERROR
                 )
             }

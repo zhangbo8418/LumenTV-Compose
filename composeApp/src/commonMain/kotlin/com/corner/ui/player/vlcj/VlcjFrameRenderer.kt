@@ -9,11 +9,10 @@ import org.jetbrains.skia.ColorAlphaType
 import org.jetbrains.skia.ImageInfo
 import uk.co.caprica.vlcj.player.base.MediaPlayer
 import uk.co.caprica.vlcj.player.embedded.videosurface.CallbackVideoSurface
-import uk.co.caprica.vlcj.player.embedded.videosurface.VideoSurfaceAdapters
 import uk.co.caprica.vlcj.player.embedded.videosurface.callback.BufferFormat
 import uk.co.caprica.vlcj.player.embedded.videosurface.callback.BufferFormatCallback
 import uk.co.caprica.vlcj.player.embedded.videosurface.callback.RenderCallback
-import uk.co.caprica.vlcj.player.embedded.videosurface.callback.format.RV32BufferFormat
+import uk.co.caprica.vlcj.player.embedded.videosurface.callback.format.StandardBufferFormat
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
@@ -99,7 +98,7 @@ class VlcjFrameRenderer(
         override fun getBufferFormat(sourceWidth: Int, sourceHeight: Int): BufferFormat {
             info = ImageInfo.makeN32(sourceWidth, sourceHeight, ColorAlphaType.OPAQUE)
             adjustBitmapPoolSize(width = sourceWidth, height = sourceHeight)
-            return RV32BufferFormat(sourceWidth, sourceHeight)
+            return StandardBufferFormat(sourceWidth, sourceHeight)
         }
 
         override fun newFormatSize(bufferWidth: Int, bufferHeight: Int, displayWidth: Int, displayHeight: Int) {
@@ -203,11 +202,11 @@ class VlcjFrameRenderer(
 
     fun createVideoSurface(): CallbackVideoSurface {
         videoSurface?.let { return it }
+        // vlcj-5：CallbackVideoSurface 不再需要 VideoSurfaceAdapter
         return CallbackVideoSurface(
             bufferFormatCallback,
             renderCallback,
             true,
-            VideoSurfaceAdapters.getVideoSurfaceAdapter()
         ).also { videoSurface = it }
     }
 

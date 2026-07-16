@@ -204,7 +204,7 @@ class VlcjFrameController(
 
     @Suppress("unused")
     fun isPlaying(): Boolean {
-        return !isReleased && controller.player?.status()?.isPlayable == true && controller.player?.status()?.isPlaying == true
+        return !isReleased && controller.player?.status()?.isPlaying == true
     }
 
     fun setStartEnd(opening: Long, ending: Long) {
@@ -284,7 +284,7 @@ class VlcjFrameController(
     
                 // 2. 安全停止播放
                 try {
-                    player.controls()?.stop()
+                    player.controls()?.stopAsync()
                     player.videoSurface()?.set(null)
                 } catch (e: Exception) {
                     log.warn("停止播放器时出错：", e)

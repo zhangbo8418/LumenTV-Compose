@@ -77,19 +77,25 @@ class LiveVlcjController : PlayerController {
         }
 
         override fun videoOutput(mediaPlayer: MediaPlayer?, newCount: Int) {
-            val trackInfo = mediaPlayer?.media()?.info()?.videoTracks()?.firstOrNull() ?: return
-            _state.update {
-                it.copy(
-                    mediaInfo = MediaInfo(
-                        url = mediaPlayer.media()?.info()?.mrl() ?: "",
-                        height = trackInfo.height(),
-                        width = trackInfo.width(),
-                        videoCodec = trackInfo.codecName(),
-                        bitRate = trackInfo.bitRate(),
-                        duration = mediaPlayer.status().length(),
-                        codecDescription = trackInfo.codecDescription()
+            val player = mediaPlayer ?: return
+            val trackList = player.tracks().videoTracks()
+            try {
+                val trackInfo = trackList.tracks().firstOrNull() ?: return
+                _state.update {
+                    it.copy(
+                        mediaInfo = MediaInfo(
+                            url = player.media()?.info()?.mrl() ?: "",
+                            height = trackInfo.height(),
+                            width = trackInfo.width(),
+                            videoCodec = trackInfo.codecName(),
+                            bitRate = trackInfo.bitRate(),
+                            duration = player.status().length(),
+                            codecDescription = trackInfo.codecDescription()
+                        )
                     )
-                )
+                }
+            } finally {
+                trackList.release()
             }
         }
 
@@ -194,7 +200,7 @@ class LiveVlcjController : PlayerController {
             isCleaned = true
             stopTrafficMonitor()
             try {
-                player?.controls()?.stop()
+                player?.controls()?.stopAsync()
             } catch (e: Exception) {
                 log.warn("停止直播播放失败", e)
             }
@@ -215,7 +221,7 @@ class LiveVlcjController : PlayerController {
         val gen = switchGeneration.incrementAndGet()
         switchJob?.cancel()
         switchJob = controllerScope.launch {
-            runCatching { player?.controls()?.stop() }
+            runCatching { player?.controls()?.stopAsync() }
             try {
                 // stop 后偶发丢失 callback 绑定，起播前再绑一次
                 onBeforePrepare?.invoke()
@@ -250,7 +256,7 @@ class LiveVlcjController : PlayerController {
         }
         try {
             playerLoading = true
-            runCatching { player?.controls()?.stop() }
+            runCatching { player?.controls()?.stopAsync() }
             val optionsList = buildVlcOptions(headers)
             log.info("直播起播 url={}", url.take(160))
             player?.media()?.prepare(url, *optionsList.toTypedArray())
@@ -295,12 +301,12 @@ class LiveVlcjController : PlayerController {
 
     override fun stop() = catch {
         showTips("停止")
-        player?.controls()?.stop()
+        player?.controls()?.stopAsync()
     }
 
     override suspend fun stopAsync() {
         withContext(Dispatchers.IO) {
-            player?.controls()?.stop()
+            player?.controls()?.stopAsync()
         }
     }
 
