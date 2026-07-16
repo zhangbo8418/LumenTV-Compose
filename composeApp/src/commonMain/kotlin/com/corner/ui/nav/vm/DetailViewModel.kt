@@ -138,13 +138,15 @@ class DetailViewModel : BaseViewModel(), VodPlaybackHost {
     override val isLastEpisode: Boolean
         get() {
             val detail = _state.value.detail
-            val totalEpisodes = detail.currentFlag.episodes.size
-            val currentEp = detail.currentFlag.episodes.find { it.activated }
-            if (currentEp != null) {
-                val currentIndex = detail.currentFlag.episodes.indexOf(currentEp)
-                return currentIndex >= totalEpisodes - 1
-            }
-            return false
+            val episodes = detail.currentFlag.episodes
+            if (episodes.isEmpty()) return true
+            val currentEp = detail.subEpisode.find { it.activated }
+                ?: episodes.find { it.activated }
+                ?: return false
+            val currentIndex = episodes.indexOfFirst { it.url == currentEp.url }
+                .takeIf { it >= 0 }
+                ?: episodes.indexOf(currentEp)
+            return currentIndex < 0 || currentIndex >= episodes.size - 1
         }
 
     init {
