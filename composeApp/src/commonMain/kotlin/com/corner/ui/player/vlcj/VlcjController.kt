@@ -400,18 +400,23 @@ class VlcjController : PlayerController {
                 scope.launch { host?.playbackError("播放中断") }
                 return
             }
+            // HLS/FLV 以前在这里直接 return，导致绝大多数源播完永远不连播下一集
             if (isHlsMrl(mrl) || isStreamingUrl(mrl)) {
-                if (mediaLength > 0 && playDuration < mediaLength - 10_000) {
+                val nearEnd = mediaLength <= 0 || playDuration >= mediaLength - 10_000L
+                if (!nearEnd) {
                     log.warn(
-                        "流媒体未播完即 finished (播放{}ms / 总长{}ms)",
+                        "流媒体未播完即 finished (播放{}ms / 总长{}ms)，跳过自动下一集",
                         playDuration,
                         mediaLength,
                     )
-                } else {
-                    log.debug("流媒体结束 finished (播放{}ms)", playDuration)
+                    _state.update { it.copy(state = PlayState.PAUSE) }
+                    return
                 }
-                _state.update { it.copy(state = PlayState.PAUSE) }
-                return
+                log.debug(
+                    "流媒体正常结束 finished (播放{}ms / 总长{}ms)，准备自动下一集",
+                    playDuration,
+                    mediaLength,
+                )
             }
 
             _state.update { it.copy(state = PlayState.PAUSE) }
